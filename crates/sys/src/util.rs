@@ -1,15 +1,15 @@
 use std::io;
 use std::iter;
 
-/// Null ile biten UTF-16 dizgesi.
+/// Null-terminated UTF-16 string.
 pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(iter::once(0)).collect()
 }
 
-/// Null ile biten bir UTF-16 işaretçisini okur.
+/// Reads a null-terminated UTF-16 pointer.
 ///
 /// # Safety
-/// `p` null olabilir; değilse null ile biten geçerli bir dizgeyi göstermelidir.
+/// `p` may be null; otherwise it must point to a valid null-terminated string.
 pub(crate) unsafe fn from_wide_ptr(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
@@ -21,7 +21,7 @@ pub(crate) unsafe fn from_wide_ptr(p: *const u16) -> String {
     String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
 }
 
-/// Sabit boyutlu bir UTF-16 tamponunu ilk null karakterine kadar okur.
+/// Reads a fixed-size UTF-16 buffer up to the first null character.
 pub(crate) fn from_wide_buf(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..end])

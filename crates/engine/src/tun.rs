@@ -1,7 +1,7 @@
-//! Wintun sanal ağ adaptörü.
+//! Wintun virtual network adapter.
 //!
-//! wintun.dll WireGuard projesi tarafından imzalanmıştır; uygulamayla birlikte
-//! (exe'nin yanında) dağıtılır, ayrıca sürücü imzalama gerekmez.
+//! wintun.dll is signed by the WireGuard project; it ships with the app
+//! (next to the exe), so no separate driver signing is needed.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,20 +17,20 @@ pub struct Tun {
 }
 
 impl Tun {
-    /// Adaptörü açar, yoksa oluşturur ve bir oturum başlatır. Yönetici yetkisi gerekir.
+    /// Opens the adapter (creating it if missing) and starts a session. Requires admin rights.
     pub fn open(dll_path: &Path) -> Result<Self> {
-        // SAFETY: wintun.dll'nin resmi sürümü yükleniyor; crate ABI'yi bununla eşleştirir.
+        // SAFETY: loads the official wintun.dll release; the crate's ABI matches it.
         let wintun = unsafe { wintun::load_from_path(dll_path) }
-            .with_context(|| format!("{} yüklenemedi", dll_path.display()))?;
+            .with_context(|| format!("failed to load {}", dll_path.display()))?;
         let adapter = match wintun::Adapter::open(&wintun, ADAPTER_NAME) {
             Ok(adapter) => adapter,
             Err(_) => wintun::Adapter::create(&wintun, ADAPTER_NAME, TUNNEL_TYPE, None)
-                .context("Wintun adaptörü oluşturulamadı (yönetici olarak çalıştırın)")?,
+                .context("failed to create Wintun adapter (run as administrator)")?,
         };
         let session = Arc::new(
             adapter
                 .start_session(wintun::MAX_RING_CAPACITY)
-                .context("Wintun oturumu başlatılamadı")?,
+                .context("failed to start Wintun session")?,
         );
         Ok(Self { adapter, session })
     }
@@ -43,7 +43,7 @@ impl Tun {
         self.session.clone()
     }
 
-    /// Bekleyen `receive_blocking` çağrılarını sonlandırır.
+    /// Unblocks pending `receive_blocking` calls.
     pub fn shutdown(&self) {
         let _ = self.session.shutdown();
     }

@@ -1,4 +1,4 @@
-//! Komut satırı tanılama araçları.
+//! Command-line diagnostic tools.
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ pub fn adapters() -> Result<()> {
     let list = router_sys::adapters::list_adapters()?;
     println!(
         "{:>4}  {:<22} {:<9} {:<10} {:<22} {:<16} {:<16} {:>6}",
-        "Idx", "Ad", "Tür", "Durum", "SSID", "IPv4", "Ağ geçidi", "Metric"
+        "Idx", "Name", "Type", "Status", "SSID", "IPv4", "Gateway", "Metric"
     );
     for a in &list {
         println!(
@@ -22,20 +22,20 @@ pub fn adapters() -> Result<()> {
             a.if_index,
             truncate(&a.friendly_name, 22),
             kind_label(a.kind),
-            if a.connected { "Bağlı" } else { "Kapalı" },
+            if a.connected { "Up" } else { "Down" },
             truncate(a.ssid.as_deref().unwrap_or("-"), 22),
             a.ipv4.first().map_or("-", String::as_str),
             a.ipv4_gateway().or(a.gateways.first().map(String::as_str)).unwrap_or("-"),
             a.ipv4_metric,
         );
-        println!("        {}{}", a.description, if a.hardware { "" } else { "  [sanal]" });
+        println!("        {}{}", a.description, if a.hardware { "" } else { "  [virtual]" });
     }
     Ok(())
 }
 
 pub fn apps() -> Result<()> {
     let apps = router_sys::processes::network_apps()?;
-    println!("{:<32} {:>5} {:>5}  PID", "Uygulama", "TCP", "UDP");
+    println!("{:<32} {:>5} {:>5}  PID", "Application", "TCP", "UDP");
     for app in &apps {
         let pids: Vec<String> = app.pids.iter().map(u32::to_string).collect();
         println!(
@@ -46,40 +46,40 @@ pub fn apps() -> Result<()> {
             pids.join(",")
         );
     }
-    println!("\nToplam {} uygulama.", apps.len());
+    println!("\n{} applications in total.", apps.len());
     Ok(())
 }
 
 pub fn probe(name: Option<&str>) -> Result<()> {
     let Some(name) = name else {
-        bail!("adaptör adı gerekli, örn: router-service probe \"Wi-Fi\"");
+        bail!("adapter name required, e.g. router-service probe \"Wi-Fi\"");
     };
     let adapter = find_adapter(name)?;
-    println!("{} (index {}) üzerinden deneniyor...", adapter.display_name(), adapter.if_index);
+    println!("Trying via {} (index {})...", adapter.display_name(), adapter.if_index);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let ip = rt
         .block_on(bind::public_ipv4_via(adapter.if_index))
-        .with_context(|| format!("{} üzerinden internete çıkılamadı", adapter.friendly_name))?;
-    println!("Dış IP: {ip}");
+        .with_context(|| format!("could not reach the internet via {}", adapter.friendly_name))?;
+    println!("Public IP: {ip}");
     Ok(())
 }
 
 pub fn tun_test() -> Result<()> {
     if !router_sys::security::is_elevated() {
-        bail!("yönetici olarak çalıştırın");
+        bail!("run as administrator");
     }
     let tun = tun::Tun::open(&crate::wintun_path()?)?;
-    println!("'{}' açıldı (index {}). 10 sn paket dinleniyor...", tun::ADAPTER_NAME, tun.if_index()?);
+    println!("Opened '{}' (index {}). Capturing packets for 10 s...", tun::ADAPTER_NAME, tun.if_index()?);
 
     let session = tun.session();
     let reader = std::thread::spawn(move || {
         let mut count = 0usize;
-        // shutdown() çağrılınca receive_blocking hata döner ve döngü biter.
+        // Once shutdown() is called, receive_blocking returns an error and the loop ends.
         while let Ok(pkt) = session.receive_blocking() {
             count += 1;
             match packet::parse(pkt.bytes()) {
                 Some(info) => println!("  {info}"),
-                None => println!("  ayrıştırılamayan paket ({} B)", pkt.bytes().len()),
+                None => println!("  unparseable packet ({} B)", pkt.bytes().len()),
             }
         }
         count
@@ -91,17 +91,17 @@ pub fn tun_test() -> Result<()> {
     }
     tun.shutdown();
     let count = reader.join().unwrap_or(0);
-    println!("Bitti: {count} paket alındı. Wintun çalışıyor.");
+    println!("Done: received {count} packets. Wintun is working.");
     Ok(())
 }
 
 pub fn firewall() -> Result<()> {
     if !router_sys::security::is_elevated() {
-        bail!("yönetici olarak çalıştırın");
+        bail!("run as administrator");
     }
     router_sys::firewall::ensure_rule(router_engine::TUN_IP, router_engine::PEER_IP)?;
     println!(
-        "Güvenlik duvarı kuralı eklendi: '{}' (gelen TCP, {} → {}).",
+        "Firewall rule added: '{}' (inbound TCP, {} -> {}).",
         router_sys::firewall::RULE_NAME,
         router_engine::PEER_IP,
         router_engine::TUN_IP
@@ -109,23 +109,23 @@ pub fn firewall() -> Result<()> {
     Ok(())
 }
 
-/// Motoru yalnızca birkaç test adresine yönelik rotalarla başlatır ve bu sürecin
-/// kendi (adaptöre bağlanmamış) soketleriyle TCP ve UDP'yi uçtan uca dener.
-/// Diğer tüm trafik normal yolundan gitmeye devam eder.
+/// Starts the engine with routes for a few test addresses only and exercises TCP
+/// and UDP end to end using this process's own (not adapter-bound) sockets.
+/// All other traffic keeps taking its normal path.
 pub fn engine_test(adapter: Option<&str>) -> Result<()> {
     if !router_sys::security::is_elevated() {
-        bail!("yönetici olarak çalıştırın");
+        bail!("run as administrator");
     }
     let dll = crate::wintun_path()?;
     if !dll.exists() {
-        bail!("{} bulunamadı; scripts\\fetch-wintun.ps1 betiğini çalıştırın", dll.display());
+        bail!("{} not found; run scripts\\fetch-wintun.ps1", dll.display());
     }
     if !router_sys::firewall::rule_exists() {
-        println!("Uyarı: güvenlik duvarı kuralı yok, TCP testi başarısız olabilir ('router-service firewall').");
+        println!("Warning: firewall rule missing, the TCP test may fail ('router-service firewall').");
     }
     let force = adapter.map(find_adapter).transpose()?;
     if let Some(a) = &force {
-        println!("Tüm test bağlantıları {} üzerinden çıkacak.", a.display_name());
+        println!("All test connections will go out via {}.", a.display_name());
     }
 
     tracing_subscriber::fmt()
@@ -137,16 +137,16 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // Test hedefleri rotalar eklenmeden önce, normal yoldan çözülür.
+        // Resolve the test targets the normal way, before the routes are added.
         let ipify = tokio::net::lookup_host(("api.ipify.org", 80))
             .await?
             .find_map(|a| match a {
                 std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
                 _ => None,
             })
-            .context("api.ipify.org çözülemedi")?;
+            .context("could not resolve api.ipify.org")?;
         let dns = Ipv4Addr::new(1, 1, 1, 1);
-        // Yalnızca IPv6 adresi olan bir sunucu: bağlantı TUN'da reddedilmeli.
+        // An IPv6-only server: the connection must be rejected on the TUN.
         let ipv6 = tokio::net::lookup_host(("api6.ipify.org", 80)).await.ok().and_then(|mut it| {
             it.find_map(|a| match a {
                 std::net::SocketAddr::V6(v6) => Some(*v6.ip()),
@@ -163,25 +163,25 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
         let policy = Arc::new(crate::policy::RulePolicy::new(rules, force.map(|a| a.if_index)));
         let engine = Engine::start(EngineConfig { wintun_dll: dll, routes }, policy.clone()).await?;
         policy.set_tun_if_index(engine.if_index());
-        println!("Motor çalışıyor; yalnızca {} TUN'a yönlendirildi.\n", targets.join(", "));
+        println!("Engine running; only {} routed to the TUN.\n", targets.join(", "));
 
         let tcp = tokio::time::timeout(Duration::from_secs(10), http_public_ip(ipify)).await;
-        let tcp = tcp.unwrap_or_else(|_| Err(anyhow::anyhow!("zaman aşımı (10 sn)")));
+        let tcp = tcp.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out (10 s)")));
         match &tcp {
-            Ok(ip) => println!("[ OK ] TCP: api.ipify.org TUN üzerinden cevap verdi, dış IP {ip}"),
+            Ok(ip) => println!("[ OK ] TCP: api.ipify.org answered via the TUN, public IP {ip}"),
             Err(e) => println!("[ !! ] TCP: {e:#}"),
         }
 
         let udp = tokio::time::timeout(Duration::from_secs(5), dns_lookup(dns, "example.com")).await;
-        let udp = udp.unwrap_or_else(|_| Err(anyhow::anyhow!("zaman aşımı (5 sn)")));
+        let udp = udp.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out (5 s)")));
         match &udp {
-            Ok(ips) => println!("[ OK ] UDP: 1.1.1.1 DNS sorgusu TUN üzerinden cevaplandı: example.com = {ips}"),
+            Ok(ips) => println!("[ OK ] UDP: DNS query to 1.1.1.1 answered via the TUN: example.com = {ips}"),
             Err(e) => println!("[ !! ] UDP: {e:#}"),
         }
 
         let v6_ok = match ipv6 {
             None => {
-                println!("[ -- ] IPv6: api6.ipify.org çözülemedi, test atlandı");
+                println!("[ -- ] IPv6: could not resolve api6.ipify.org, test skipped");
                 true
             }
             Some(ip) => {
@@ -194,15 +194,15 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
                 let ms = start.elapsed().as_millis();
                 match attempt {
                     Ok(Err(_)) => {
-                        println!("[ OK ] IPv6: bağlantı {ms} ms içinde reddedildi; uygulamalar IPv4'e geçer");
+                        println!("[ OK ] IPv6: connection rejected within {ms} ms; applications fall back to IPv4");
                         true
                     }
                     Ok(Ok(_)) => {
-                        println!("[ !! ] IPv6: bağlantı kuruldu; IPv6 trafiği kuralları atlayabilir");
+                        println!("[ !! ] IPv6: connection established; IPv6 traffic may bypass the rules");
                         false
                     }
                     Err(_) => {
-                        println!("[ !! ] IPv6: bağlantı reddedilmedi, 3 sn bekledi (uygulamalar yavaşlar)");
+                        println!("[ !! ] IPv6: connection not rejected, waited 3 s (applications will stall)");
                         false
                     }
                 }
@@ -211,35 +211,35 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
 
         drop(engine);
         if tcp.is_err() || udp.is_err() || !v6_ok {
-            bail!("motor testi başarısız");
+            bail!("engine test failed");
         }
-        println!("\nMotor testi başarılı; rotalar kaldırıldı.");
+        println!("\nEngine test passed; routes removed.");
         Ok(())
     })
 }
 
-/// Adaptöre bağlanmamış sıradan bir soketle: rota tablosu ne derse oradan gider.
+/// Uses a plain socket not bound to any adapter: it goes wherever the route table says.
 async fn http_public_ip(ip: Ipv4Addr) -> Result<String> {
-    let mut s = tokio::net::TcpStream::connect((ip, 80)).await.context("bağlanılamadı")?;
+    let mut s = tokio::net::TcpStream::connect((ip, 80)).await.context("connect failed")?;
     s.write_all(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n").await?;
     let mut resp = Vec::new();
     s.read_to_end(&mut resp).await?;
     let resp = String::from_utf8_lossy(&resp);
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or_default().trim();
     if body.is_empty() {
-        bail!("boş yanıt");
+        bail!("empty response");
     }
     Ok(body.to_string())
 }
 
-/// En basit DNS A sorgusu; cevaptaki IPv4 adreslerini döndürür.
+/// Minimal DNS A query; returns the IPv4 addresses from the answer.
 async fn dns_lookup(server: Ipv4Addr, name: &str) -> Result<String> {
     let mut query = vec![0x52, 0x54, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
     for label in name.split('.') {
         query.push(label.len() as u8);
         query.extend_from_slice(label.as_bytes());
     }
-    query.extend_from_slice(&[0, 0, 1, 0, 1]); // kök, tip A, sınıf IN
+    query.extend_from_slice(&[0, 0, 1, 0, 1]); // root, type A, class IN
 
     let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     sock.send_to(&query, (server, 53)).await?;
@@ -247,14 +247,14 @@ async fn dns_lookup(server: Ipv4Addr, name: &str) -> Result<String> {
     let (n, _) = sock.recv_from(&mut buf).await?;
     let resp = &buf[..n];
     if n < 12 || resp[..2] != query[..2] {
-        bail!("geçersiz DNS cevabı");
+        bail!("invalid DNS response");
     }
-    // Cevaplardaki 4 baytlık A kayıtlarını topla (soru bölümünü atla).
+    // Collect the 4-byte A records from the answers (skip the question section).
     let answers = u16::from_be_bytes([resp[6], resp[7]]);
     let mut pos = query.len();
     let mut ips = Vec::new();
     for _ in 0..answers {
-        // ad: sıkıştırılmış işaretçi (2 bayt) veya etiket dizisi
+        // name: compression pointer (2 bytes) or label sequence
         if resp.get(pos).is_some_and(|b| b & 0xc0 == 0xc0) {
             pos += 2;
         } else {
@@ -276,7 +276,7 @@ async fn dns_lookup(server: Ipv4Addr, name: &str) -> Result<String> {
         pos += rdlen as usize;
     }
     if ips.is_empty() {
-        bail!("cevapta A kaydı yok ({answers} cevap)");
+        bail!("no A record in the response ({answers} answers)");
     }
     Ok(ips.join(", "))
 }
@@ -288,37 +288,37 @@ pub fn doctor() -> Result<()> {
             println!("[ OK ] {msg}");
         } else {
             ok = false;
-            println!("[ !! ] {msg}\n       → {hint}");
+            println!("[ !! ] {msg}\n       -> {hint}");
         }
     };
 
     check(
         router_sys::security::is_elevated(),
-        "Yönetici yetkisi",
-        "TUN oluşturmak ve servisi kurmak için terminali yönetici olarak açın.",
+        "Administrator privileges",
+        "Open the terminal as administrator to create the TUN and install the service.",
     );
 
     let dll = crate::wintun_path()?;
     check(
         is_x64_dll(&dll),
         &format!("wintun.dll ({})", dll.display()),
-        "Dosya yok veya bozuk; scripts\\fetch-wintun.ps1 betiğini çalıştırın.",
+        "File missing or corrupt; run scripts\\fetch-wintun.ps1.",
     );
 
     check(
         router_sys::firewall::rule_exists(),
-        &format!("Güvenlik duvarı kuralı ('{}')", router_sys::firewall::RULE_NAME),
-        "Yönetici terminalinde 'router-service firewall' (veya 'install') çalıştırın.",
+        &format!("Firewall rule ('{}')", router_sys::firewall::RULE_NAME),
+        "Run 'router-service firewall' (or 'install') in an administrator terminal.",
     );
 
     let policy = router_sys::policy::minimize_connections();
     check(
         policy == Some(0),
         &format!(
-            "Eşzamanlı bağlantı politikası (fMinimizeConnections = {})",
-            policy.map_or("ayarlanmamış".to_string(), |v| v.to_string())
+            "Simultaneous connections policy (fMinimizeConnections = {})",
+            policy.map_or("not set".to_string(), |v| v.to_string())
         ),
-        "Windows ikinci bağlantıyı düşürebilir; 'router-service install' bunu düzeltir.",
+        "Windows may drop the second connection; 'router-service install' fixes this.",
     );
 
     let adapters = router_sys::adapters::list_adapters()?;
@@ -329,12 +329,12 @@ pub fn doctor() -> Result<()> {
     let names: Vec<String> = online.iter().map(|a| a.display_name()).collect();
     check(
         online.len() >= 2,
-        &format!("İnternete bağlı adaptör sayısı: {} ({})", online.len(), names.join(", ")),
-        "Uygulamayı kullanmak için en az iki bağlantı gerekir (örn. ikinci bir USB Wi-Fi veya telefondan USB tethering).",
+        &format!("Adapters connected to the internet: {} ({})", online.len(), names.join(", ")),
+        "At least two connections are needed to use the app (e.g. a second USB Wi-Fi adapter or USB tethering from a phone).",
     );
 
     println!();
-    println!("{}", if ok { "Sistem hazır." } else { "Yukarıdaki sorunları giderin." });
+    println!("{}", if ok { "System is ready." } else { "Fix the issues above." });
     Ok(())
 }
 
@@ -347,10 +347,10 @@ fn find_adapter(name: &str) -> Result<AdapterInfo> {
                 || a.if_index.to_string() == wanted
                 || a.ssid.as_deref().is_some_and(|s| s.to_lowercase() == wanted)
         })
-        .with_context(|| format!("'{name}' adında adaptör bulunamadı ('adapters' komutuyla listeleyin)"))
+        .with_context(|| format!("no adapter named '{name}' (list them with the 'adapters' command)"))
 }
 
-/// Dosya geçerli bir x64 PE (DLL/EXE) mi? Yarım kalmış kopyaları yakalar.
+/// Is the file a valid x64 PE (DLL/EXE)? Catches half-finished copies.
 fn is_x64_dll(path: &std::path::Path) -> bool {
     const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
     let Ok(bytes) = std::fs::read(path) else { return false };
@@ -366,8 +366,8 @@ fn kind_label(kind: AdapterKind) -> &'static str {
     match kind {
         AdapterKind::Wifi => "Wi-Fi",
         AdapterKind::Ethernet => "Ethernet",
-        AdapterKind::Cellular => "Hücresel",
-        AdapterKind::Other => "Diğer",
+        AdapterKind::Cellular => "Cellular",
+        AdapterKind::Other => "Other",
     }
 }
 
@@ -375,8 +375,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        let mut t: String = s.chars().take(max - 1).collect();
-        t.push('…');
+        // ASCII ellipsis; still `max` chars wide so table columns line up.
+        let mut t: String = s.chars().take(max - 3).collect();
+        t.push_str("...");
         t
     }
 }

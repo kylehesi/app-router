@@ -1,9 +1,9 @@
 //! TCP NAT tablosu ("system stack").
 //!
-//! Uygulamanın `TUN_IP:app_port → hedef` bağlantısı, Windows'un kendi TCP
-//! yığınındaki yerel dinleyiciye `PEER_IP:nat_port → TUN_IP:dinleyici` olarak
-//! yönlendirilir. Dinleyici bağlantıyı kabul ettiğinde `nat_port` ile orijinal
-//! hedef bulunur; dinleyicinin cevapları da aynı tabloyla geri çevrilir.
+//! An app's `TUN_IP:app_port -> destination` connection is redirected to a local
+//! listener on Windows' own TCP stack as `PEER_IP:nat_port -> TUN_IP:listener`.
+//! When the listener accepts it, `nat_port` maps back to the original destination;
+//! the listener's replies are translated back through the same table.
 
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
@@ -21,7 +21,7 @@ pub struct NatEntry {
 
 struct Slot {
     entry: NatEntry,
-    /// Dinleyici bağlantıyı kabul etti ve aktarma sürüyor; zaman aşımına uğratılmaz.
+    /// The listener accepted the connection and the relay is running; never expired.
     active: bool,
     last_seen: Instant,
 }
@@ -39,9 +39,9 @@ pub struct TcpNat {
 }
 
 impl TcpNat {
-    /// Uygulamadan çıkan paket için NAT portunu döndürür. Kayıt yalnızca yeni
-    /// bağlantı açılışında (`syn`) oluşturulur; bilinmeyen bağlantının diğer
-    /// paketleri için `None` döner.
+    /// Returns the NAT port for a packet leaving the app. An entry is created only
+    /// when a new connection opens (`syn`); other packets of an unknown connection
+    /// get `None`.
     pub fn outbound(&self, app_port: u16, dst: SocketAddrV4, syn: bool) -> Option<u16> {
         let mut g = self.inner.lock().unwrap();
         let inner = &mut *g;
@@ -67,7 +67,7 @@ impl TcpNat {
         Some(port)
     }
 
-    /// Dinleyiciden uygulamaya dönen paket için orijinal bağlantıyı bulur.
+    /// Looks up the original connection for a packet going from the listener back to the app.
     pub fn inbound(&self, nat_port: u16) -> Option<NatEntry> {
         let mut g = self.inner.lock().unwrap();
         let slot = g.by_nat.get_mut(&nat_port)?;
@@ -75,7 +75,7 @@ impl TcpNat {
         Some(slot.entry)
     }
 
-    /// Dinleyici bağlantıyı kabul ettiğinde çağrılır; kaydı aktif işaretler.
+    /// Called when the listener accepts the connection; marks the entry active.
     pub fn activate(&self, nat_port: u16) -> Option<NatEntry> {
         let mut g = self.inner.lock().unwrap();
         let slot = g.by_nat.get_mut(&nat_port)?;
@@ -90,7 +90,7 @@ impl TcpNat {
         }
     }
 
-    /// Kabul edilmeden `idle` süre bekleyen kayıtları siler (cevapsız kalan SYN'ler).
+    /// Removes entries that waited `idle` without being accepted (unanswered SYNs).
     pub fn expire(&self, idle: Duration) -> usize {
         let mut g = self.inner.lock().unwrap();
         let now = Instant::now();
@@ -118,7 +118,7 @@ impl TcpNat {
 }
 
 impl Inner {
-    /// Sıradaki boş NAT portu; aralık doluysa `None`.
+    /// Next free NAT port; `None` if the range is exhausted.
     fn allocate(&mut self) -> Option<u16> {
         let span = u32::from(PORT_LAST - PORT_FIRST) + 1;
         for _ in 0..span {
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn syn_creates_entry_and_lookups_agree() {
         let nat = TcpNat::default();
-        assert_eq!(nat.outbound(50000, dst(), false), None, "SYN'siz paket kayıt açmamalı");
+        assert_eq!(nat.outbound(50000, dst(), false), None, "a packet without SYN must not create an entry");
         let port = nat.outbound(50000, dst(), true).unwrap();
         assert_eq!(nat.outbound(50000, dst(), false), Some(port));
         assert_eq!(nat.inbound(port), Some(NatEntry { app_port: 50000, dst: dst() }));

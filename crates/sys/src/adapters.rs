@@ -1,4 +1,4 @@
-//! Ağ adaptörlerinin listelenmesi (IP Helper API + WLAN API).
+//! Network adapter enumeration (IP Helper API + WLAN API).
 
 use std::ffi::{c_char, CStr};
 use std::io;
@@ -26,10 +26,10 @@ const IF_TYPE_TUNNEL: u32 = 131;
 const IF_TYPE_WWANPP: u32 = 243;
 const IF_TYPE_WWANPP2: u32 = 244;
 const IF_OPER_STATUS_UP: i32 = 1;
-/// MIB_IF_ROW2.InterfaceAndOperStatusFlags içindeki HardwareInterface biti.
+/// HardwareInterface bit in MIB_IF_ROW2.InterfaceAndOperStatusFlags.
 const FLAG_HARDWARE_INTERFACE: u8 = 0x01;
 
-/// Loopback ve tünel arayüzleri hariç tüm adaptörleri döndürür.
+/// Returns all adapters except loopback and tunnel interfaces.
 pub fn list_adapters() -> io::Result<Vec<AdapterInfo>> {
     let buf = adapter_addresses()?;
     let wifi = wlan::current_connections();
@@ -37,7 +37,7 @@ pub fn list_adapters() -> io::Result<Vec<AdapterInfo>> {
 
     let mut cur = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
     while !cur.is_null() {
-        // SAFETY: GetAdaptersAddresses'ın doldurduğu bağlı liste; tampon `buf` yaşadıkça geçerli.
+        // SAFETY: linked list filled by GetAdaptersAddresses; valid as long as `buf` lives.
         let a = unsafe { &*cur };
         cur = a.Next;
 
@@ -100,7 +100,7 @@ pub fn list_adapters() -> io::Result<Vec<AdapterInfo>> {
     Ok(out)
 }
 
-/// GetAdaptersAddresses için tamponu ayırır; tablo büyürse yeniden dener.
+/// Allocates the buffer for GetAdaptersAddresses; retries if the table grows.
 fn adapter_addresses() -> io::Result<Vec<u64>> {
     let flags = GAA_FLAG_INCLUDE_GATEWAYS
         | GAA_FLAG_SKIP_ANYCAST
@@ -108,7 +108,7 @@ fn adapter_addresses() -> io::Result<Vec<u64>> {
         | GAA_FLAG_SKIP_DNS_SERVER;
     let mut size: u32 = 16 * 1024;
     for _ in 0..4 {
-        // u64 tampon: yapıların 8 baytlık hizalamasını garanti eder.
+        // u64 buffer: guarantees 8-byte alignment for the structs.
         let mut buf = vec![0u64; (size as usize).div_ceil(8)];
         let ret = unsafe {
             GetAdaptersAddresses(
@@ -125,7 +125,7 @@ fn adapter_addresses() -> io::Result<Vec<u64>> {
             e => return Err(win32_err(e)),
         }
     }
-    Err(io::Error::other("adaptör listesi alınamadı (tampon boyutu sürekli değişti)"))
+    Err(io::Error::other("failed to get adapter list (buffer size kept changing)"))
 }
 
 fn if_row(luid: u64) -> Option<MIB_IF_ROW2> {
@@ -148,7 +148,7 @@ fn is_link_local(ip: &Ipv6Addr) -> bool {
 }
 
 /// # Safety
-/// `sa.lpSockaddr` null veya geçerli bir SOCKADDR olmalıdır.
+/// `sa.lpSockaddr` must be null or point to a valid SOCKADDR.
 unsafe fn sockaddr_to_ip(sa: &SOCKET_ADDRESS) -> Option<IpAddr> {
     if sa.lpSockaddr.is_null() {
         return None;

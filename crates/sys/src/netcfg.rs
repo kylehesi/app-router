@@ -1,5 +1,5 @@
-//! Arayüz yapılandırması: IPv4 adresi, MTU ve rotalar (IP Helper API).
-//! Hepsi yönetici yetkisi gerektirir.
+//! Interface configuration: IPv4 address, MTU and routes (IP Helper API).
+//! All of it requires administrator rights.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -21,7 +21,7 @@ use crate::util::win32_err;
 const IP_DAD_STATE_PREFERRED: i32 = 4;
 const MIB_IPPROTO_NETMGMT: i32 = 3;
 
-/// IP ön eki, örn. 0.0.0.0/1 veya 2000::/3.
+/// IP prefix, e.g. 0.0.0.0/1 or 2000::/3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpPrefix {
     pub addr: IpAddr,
@@ -73,7 +73,7 @@ fn sockaddr_inet(ip: IpAddr) -> SOCKADDR_INET {
     s
 }
 
-/// Arayüze IP adresi atar (zaten varsa dokunmaz). DAD beklenmez: adres hemen kullanılabilir.
+/// Assigns an IP address to the interface (no-op if it already exists). Skips DAD so the address is usable immediately.
 pub fn set_address(if_index: u32, ip: IpAddr, prefix_len: u8) -> io::Result<()> {
     let mut row: MIB_UNICASTIPADDRESS_ROW = unsafe { std::mem::zeroed() };
     unsafe { InitializeUnicastIpAddressEntry(&mut row) };
@@ -87,7 +87,7 @@ pub fn set_address(if_index: u32, ip: IpAddr, prefix_len: u8) -> io::Result<()> 
     }
 }
 
-/// Arayüzün IPv4 MTU değerini ayarlar.
+/// Sets the interface's IPv4 MTU.
 pub fn set_ipv4_mtu(if_index: u32, mtu: u32) -> io::Result<()> {
     let mut row: MIB_IPINTERFACE_ROW = unsafe { std::mem::zeroed() };
     unsafe { InitializeIpInterfaceEntry(&mut row) };
@@ -98,7 +98,7 @@ pub fn set_ipv4_mtu(if_index: u32, mtu: u32) -> io::Result<()> {
         e => return Err(win32_err(e)),
     }
     row.NlMtu = mtu;
-    // IPv4'te SitePrefixLength 0 olmalı, yoksa SetIpInterfaceEntry ERROR_INVALID_PARAMETER döner.
+    // SitePrefixLength must be 0 for IPv4, or SetIpInterfaceEntry returns ERROR_INVALID_PARAMETER.
     row.SitePrefixLength = 0;
     match unsafe { SetIpInterfaceEntry(&mut row) } {
         NO_ERROR => Ok(()),
@@ -112,7 +112,7 @@ fn route_row(luid: NET_LUID_LH, prefix: IpPrefix) -> MIB_IPFORWARD_ROW2 {
     row.InterfaceLuid = luid;
     row.DestinationPrefix.Prefix = sockaddr_inet(prefix.addr);
     row.DestinationPrefix.PrefixLength = prefix.len;
-    // Bağlantı üzerinde (on-link): sonraki atlama, ailenin "belirtilmemiş" adresi.
+    // On-link: the next hop is the family's unspecified address.
     row.NextHop = sockaddr_inet(match prefix.addr {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
@@ -122,7 +122,7 @@ fn route_row(luid: NET_LUID_LH, prefix: IpPrefix) -> MIB_IPFORWARD_ROW2 {
     row
 }
 
-/// Eklenen rotaları tutar; düşürüldüğünde (drop) hepsini siler.
+/// Holds the added routes; deletes them all on drop.
 pub struct RouteGuard {
     luid: NET_LUID_LH,
     routes: Vec<IpPrefix>,
@@ -134,15 +134,15 @@ impl RouteGuard {
     }
 }
 
-/// Ön ekleri bu arayüze yönlendiren rotaları ekler. Biri başarısız olursa
-/// o ana kadar eklenenler geri alınır.
+/// Adds routes sending the prefixes to this interface. If one fails, the ones
+/// added so far are rolled back.
 pub fn add_routes(if_index: u32, prefixes: &[IpPrefix]) -> io::Result<RouteGuard> {
     let mut guard = RouteGuard { luid: luid_of(if_index)?, routes: Vec::new() };
     for &prefix in prefixes {
         let row = route_row(guard.luid, prefix);
         match unsafe { CreateIpForwardEntry2(&row) } {
             NO_ERROR | ERROR_OBJECT_ALREADY_EXISTS => guard.routes.push(prefix),
-            e => return Err(win32_err(e)), // guard düşer, eklenenler silinir
+            e => return Err(win32_err(e)), // guard drops, removing the added routes
         }
     }
     Ok(guard)
@@ -153,7 +153,7 @@ impl Drop for RouteGuard {
         for &prefix in &self.routes {
             let row = route_row(self.luid, prefix);
             let ret = unsafe { DeleteIpForwardEntry2(&row) };
-            debug_assert!(ret == NO_ERROR || ret == ERROR_NOT_FOUND, "rota silinemedi: {ret}");
+            debug_assert!(ret == NO_ERROR || ret == ERROR_NOT_FOUND, "failed to delete route: {ret}");
         }
     }
 }

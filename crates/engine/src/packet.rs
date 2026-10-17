@@ -1,4 +1,4 @@
-//! TUN'dan okunan ham IP paketlerinin başlıklarını ayrıştırma.
+//! Header parsing for raw IP packets read from TUN.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4};
@@ -15,13 +15,13 @@ pub struct PacketInfo {
     pub dst: IpAddr,
     pub src_port: Option<u16>,
     pub dst_port: Option<u16>,
-    /// IP başlığının bayt cinsinden uzunluğu (taşıma katmanının başladığı ofset).
+    /// IP header length in bytes (the offset where the transport layer starts).
     pub header_len: usize,
     pub total_len: usize,
 }
 
-/// IPv4 veya IPv6 paketini ayrıştırır. Bozuk/kısa paketlerde `None` döner.
-/// IPv6 uzantı başlıkları atlanmaz; `protocol` ilk Next Header değeridir.
+/// Parses an IPv4 or IPv6 packet. Returns `None` for malformed/short packets.
+/// IPv6 extension headers are not skipped; `protocol` is the first Next Header value.
 pub fn parse(p: &[u8]) -> Option<PacketInfo> {
     let (protocol, src, dst, header_len) = match p.first()? >> 4 {
         4 => {
@@ -65,15 +65,15 @@ pub const TCP_ACK: u8 = 0x10;
 pub const IPV4_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
 
-/// Paket bir IPv4 parçası mı (fragment)? Parçalar yeniden birleştirilmeden işlenemez.
+/// Is the packet an IPv4 fragment? Fragments cannot be handled without reassembly.
 pub fn is_v4_fragment(p: &[u8]) -> bool {
-    // bayrak/ofset alanı: MF biti (0x2000) veya sıfır olmayan ofset (alt 13 bit)
+    // flags/offset field: MF bit (0x2000) or a non-zero offset (low 13 bits)
     p.len() >= 8 && (u16::from_be_bytes([p[6], p[7]]) & 0x3fff) != 0
 }
 
-/// IPv4 TCP paketinin kaynak/hedef adres ve portlarını değiştirir; IP ve TCP
-/// sağlama toplamlarını artımlı olarak günceller. `ihl`: IP başlığı uzunluğu.
-/// Çağıran, `pkt.len() >= ihl + 20` olduğunu garanti etmelidir.
+/// Rewrites the source/destination addresses and ports of an IPv4 TCP packet and
+/// incrementally updates the IP and TCP checksums. `ihl`: IP header length.
+/// The caller must guarantee `pkt.len() >= ihl + 20`.
 pub fn rewrite_v4_tcp(pkt: &mut [u8], ihl: usize, src: SocketAddrV4, dst: SocketAddrV4) {
     let mut old_addrs = [0u8; 8];
     old_addrs.copy_from_slice(&pkt[12..20]);
@@ -91,7 +91,7 @@ pub fn rewrite_v4_tcp(pkt: &mut [u8], ihl: usize, src: SocketAddrV4, dst: Socket
     let ip_check = u16::from_be_bytes([pkt[10], pkt[11]]);
     let ip_check = checksum::update(ip_check, &old_addrs, &new_addrs);
 
-    // TCP sağlama toplamı sözde başlıktaki adresleri de kapsar.
+    // The TCP checksum also covers the addresses in the pseudo-header.
     let tcp_check = u16::from_be_bytes([pkt[t + 16], pkt[t + 17]]);
     let tcp_check = checksum::update(tcp_check, &old_addrs, &new_addrs);
     let tcp_check = checksum::update(tcp_check, &old_ports, &new_ports);
@@ -102,8 +102,8 @@ pub fn rewrite_v4_tcp(pkt: &mut [u8], ihl: usize, src: SocketAddrV4, dst: Socket
     pkt[t + 16..t + 18].copy_from_slice(&tcp_check.to_be_bytes());
 }
 
-/// `out` içine eksiksiz bir IPv4/UDP paketi yazar. `out.len()`,
-/// `IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()` olmalıdır.
+/// Writes a complete IPv4/UDP packet into `out`. `out.len()` must be
+/// `IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()`.
 pub fn write_v4_udp(out: &mut [u8], id: u16, src: SocketAddrV4, dst: SocketAddrV4, payload: &[u8]) {
     let total = out.len();
     debug_assert_eq!(total, IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len());
@@ -111,7 +111,7 @@ pub fn write_v4_udp(out: &mut [u8], id: u16, src: SocketAddrV4, dst: SocketAddrV
     let (ip, rest) = out.split_at_mut(IPV4_HEADER_LEN);
     let (udp, data) = rest.split_at_mut(UDP_HEADER_LEN);
 
-    ip[0] = 0x45; // IPv4, 20 baytlık başlık
+    ip[0] = 0x45; // IPv4, 20-byte header
     ip[1] = 0;
     ip[2..4].copy_from_slice(&(total as u16).to_be_bytes());
     ip[4..6].copy_from_slice(&id.to_be_bytes());
@@ -132,7 +132,7 @@ pub fn write_v4_udp(out: &mut [u8], id: u16, src: SocketAddrV4, dst: SocketAddrV
 
     let acc = checksum::pseudo_v4(src.ip().octets(), dst.ip().octets(), PROTO_UDP, udp_len);
     let acc = checksum::add(checksum::add(acc, udp), data);
-    // UDP'de 0 "sağlama toplamı yok" demektir; hesaplanan 0 değeri 0xffff olarak yazılır.
+    // In UDP, 0 means "no checksum"; a computed 0 is written as 0xffff.
     let udp_check = match checksum::finish(acc) {
         0 => 0xffff,
         c => c,
@@ -141,12 +141,12 @@ pub fn write_v4_udp(out: &mut [u8], id: u16, src: SocketAddrV4, dst: SocketAddrV
 }
 
 pub const IPV6_HEADER_LEN: usize = 40;
-/// [`v6_tcp_rst`] çıktısının uzunluğu: IPv6 başlığı + seçeneksiz TCP başlığı.
+/// Length of [`v6_tcp_rst`] output: IPv6 header + TCP header without options.
 pub const V6_RST_LEN: usize = IPV6_HEADER_LEN + 20;
 
-/// Gelen bir IPv6 TCP paketine, bağlantıyı hemen reddeden RST cevabını üretir
-/// (RFC 9293 bölüm 3.10.7.1). Uygulama beklemeden IPv4'e geçer.
-/// Paket RST ise, TCP değilse veya uzantı başlığı varsa `None` döner.
+/// Builds an RST reply to an incoming IPv6 TCP packet that rejects the connection
+/// immediately (RFC 9293 section 3.10.7.1), so the app falls back to IPv4 without waiting.
+/// Returns `None` if the packet is an RST, is not TCP, or has an extension header.
 pub fn v6_tcp_rst(p: &[u8]) -> Option<[u8; V6_RST_LEN]> {
     if p.len() < IPV6_HEADER_LEN + 20 || p[0] >> 4 != 6 || p[6] != PROTO_TCP {
         return None;
@@ -154,7 +154,7 @@ pub fn v6_tcp_rst(p: &[u8]) -> Option<[u8; V6_RST_LEN]> {
     let t = &p[IPV6_HEADER_LEN..];
     let flags = t[13];
     if flags & TCP_RST != 0 {
-        return None; // RST'ye RST ile cevap verilmez
+        return None; // never answer an RST with an RST
     }
     let payload_len = usize::from(u16::from_be_bytes([p[4], p[5]]));
     let data_offset = usize::from(t[12] >> 4) * 4;
@@ -164,7 +164,7 @@ pub fn v6_tcp_rst(p: &[u8]) -> Option<[u8; V6_RST_LEN]> {
     let their_seq = u32::from_be_bytes([t[4], t[5], t[6], t[7]]);
     let their_ack = u32::from_be_bytes([t[8], t[9], t[10], t[11]]);
 
-    // ACK'li pakete: seq = onların ack'i. ACK'siz pakete (ör. SYN): seq 0, ack = seq + uzunluk.
+    // Packet with ACK: seq = their ack. Packet without ACK (e.g. SYN): seq 0, ack = seq + length.
     let (seq, ack, rst_flags) = if flags & TCP_ACK != 0 {
         (their_ack, 0, TCP_RST)
     } else {
@@ -176,8 +176,8 @@ pub fn v6_tcp_rst(p: &[u8]) -> Option<[u8; V6_RST_LEN]> {
     out[4..6].copy_from_slice(&20u16.to_be_bytes());
     out[6] = PROTO_TCP;
     out[7] = 64;
-    out[8..24].copy_from_slice(&p[24..40]); // kaynak = onların hedefi
-    out[24..40].copy_from_slice(&p[8..24]); // hedef = onların kaynağı
+    out[8..24].copy_from_slice(&p[24..40]); // source = their destination
+    out[24..40].copy_from_slice(&p[8..24]); // destination = their source
 
     let r = &mut out[IPV6_HEADER_LEN..];
     r[0..2].copy_from_slice(&t[2..4]);
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(info.dst_port, Some(53));
     }
 
-    /// Sağlama toplamları doğru olan örnek bir IPv4 TCP SYN paketi.
+    /// A sample IPv4 TCP SYN packet with correct checksums.
     fn tcp_syn(src: SocketAddrV4, dst: SocketAddrV4) -> Vec<u8> {
         let mut p = vec![0u8; 40];
         p[0] = 0x45;
@@ -247,7 +247,7 @@ mod tests {
         p[20..22].copy_from_slice(&src.port().to_be_bytes());
         p[22..24].copy_from_slice(&dst.port().to_be_bytes());
         p[24..28].copy_from_slice(&0x1234_5678u32.to_be_bytes());
-        p[32] = 0x50; // veri ofseti: 5 kelime
+        p[32] = 0x50; // data offset: 5 words
         p[33] = TCP_SYN;
         p[34..36].copy_from_slice(&64240u16.to_be_bytes());
         fix_tcp_checksum(&mut p);
@@ -281,17 +281,17 @@ mod tests {
         let info = parse(&p).unwrap();
         assert_eq!(info.src, IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)));
         assert_eq!(info.dst_port, Some(61234));
-        // IP başlığının toplamı (sağlama toplamı dahil) geçerliyse 0 çıkar.
+        // The IP header sum (including the checksum) is 0 when valid.
         assert_eq!(checksum::finish(checksum::add(0, &p[..20])), 0);
         assert_eq!(u16::from_be_bytes([p[36], p[37]]), full_tcp_checksum(&p));
-        // Sıra numarası ve bayraklar korunur.
+        // Sequence number and flags are preserved.
         assert_eq!(&p[24..28], &0x1234_5678u32.to_be_bytes());
         assert_eq!(p[33], TCP_SYN);
     }
 
     #[test]
     fn udp_builder_produces_valid_packet() {
-        let payload = b"merhaba";
+        let payload = b"payload";
         let mut out = vec![0u8; IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
         write_v4_udp(&mut out, 7, addr("1.1.1.1:53"), addr("198.18.0.1:5353"), payload);
 
@@ -323,12 +323,12 @@ mod tests {
     #[test]
     fn v6_rst_answers_syn() {
         let rst = v6_tcp_rst(&v6_syn()).unwrap();
-        assert_eq!(&rst[8..24], &v6_syn()[24..40], "kaynak/hedef yer değiştirmeli");
+        assert_eq!(&rst[8..24], &v6_syn()[24..40], "source/destination must be swapped");
         assert_eq!(u16::from_be_bytes([rst[40], rst[41]]), 443);
         assert_eq!(u16::from_be_bytes([rst[42], rst[43]]), 51000);
         assert_eq!(u32::from_be_bytes(rst[48..52].try_into().unwrap()), 1001, "ack = seq + SYN");
         assert_eq!(rst[53], TCP_RST | TCP_ACK);
-        // Sözde başlık dahil toplam geçerliyse 0 çıkar.
+        // The sum including the pseudo-header is 0 when valid.
         let src: [u8; 16] = rst[8..24].try_into().unwrap();
         let dst: [u8; 16] = rst[24..40].try_into().unwrap();
         let acc = checksum::pseudo_v6(src, dst, PROTO_TCP, 20);
@@ -341,11 +341,11 @@ mod tests {
         p[53] = TCP_ACK;
         p[48..52].copy_from_slice(&777u32.to_be_bytes());
         let rst = v6_tcp_rst(&p).unwrap();
-        assert_eq!(u32::from_be_bytes(rst[44..48].try_into().unwrap()), 777, "seq = onların ack'i");
+        assert_eq!(u32::from_be_bytes(rst[44..48].try_into().unwrap()), 777, "seq = their ack");
         assert_eq!(rst[53], TCP_RST);
 
         p[53] = TCP_RST;
-        assert!(v6_tcp_rst(&p).is_none(), "RST'ye cevap verilmez");
+        assert!(v6_tcp_rst(&p).is_none(), "an RST must not be answered");
         p[6] = PROTO_UDP;
         assert!(v6_tcp_rst(&p).is_none());
     }
@@ -356,7 +356,7 @@ mod tests {
         assert!(!is_v4_fragment(&p));
         p[6] = 0x20; // MF
         assert!(is_v4_fragment(&p));
-        p[6] = 0x40; // yalnızca DF
+        p[6] = 0x40; // DF only
         assert!(!is_v4_fragment(&p));
     }
 

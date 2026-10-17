@@ -1,4 +1,4 @@
-//! Motorun bağlantı başına sorduğu soruya cevap: soket → PID → exe → kural → adaptör.
+//! Answers the engine's per-connection question: socket -> PID -> exe -> rule -> adapter.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,14 +10,14 @@ use tracing::{debug, warn};
 
 use crate::rules::RuleStore;
 
-/// Adaptör listesi en fazla bu kadar eski olabilir (takılıp çıkarma, kopma).
+/// Maximum age of the adapter list (adapters get plugged in, unplugged, disconnected).
 const ADAPTER_CACHE_TTL: Duration = Duration::from_secs(3);
 
 pub struct RulePolicy {
     rules: Arc<RuleStore>,
     adapters: Mutex<Option<(Instant, Arc<Vec<AdapterInfo>>)>>,
     tun_if_index: AtomicU32,
-    /// Test için: her bağlantıyı kurallara bakmadan bu adaptöre gönder.
+    /// For testing: send every connection to this adapter, ignoring the rules.
     force: Option<u32>,
 }
 
@@ -31,7 +31,7 @@ impl RulePolicy {
         }
     }
 
-    /// Motor başlayınca çağrılır; TUN asla "varsayılan adaptör" seçilmemeli.
+    /// Called once the engine starts; the TUN must never be picked as the "default adapter".
     pub fn set_tun_if_index(&self, if_index: u32) {
         self.tun_if_index.store(if_index, Ordering::Relaxed);
     }
@@ -46,8 +46,8 @@ impl RulePolicy {
         let list = match router_sys::adapters::list_adapters() {
             Ok(list) => Arc::new(list),
             Err(e) => {
-                warn!("adaptör listesi alınamadı: {e}");
-                // Eski liste varsa onunla devam et; hiç yoksa boş liste.
+                warn!("failed to list adapters: {e}");
+                // Keep using the stale list if there is one; otherwise an empty list.
                 return cache.as_ref().map(|(_, l)| l.clone()).unwrap_or_default();
             }
         };
@@ -62,7 +62,7 @@ impl RulePolicy {
             && a.if_index != self.tun_if_index.load(Ordering::Relaxed)
     }
 
-    /// Windows'un tercih edeceği adaptör: internete çıkabilenlerin en düşük metric'lisi.
+    /// The adapter Windows would pick: the lowest-metric one that can reach the internet.
     fn default_route(&self, adapters: &[AdapterInfo]) -> Route {
         adapters
             .iter()
@@ -98,7 +98,7 @@ impl Policy for RulePolicy {
             },
             None => self.default_route(&adapters),
         };
-        debug!(proto = ?flow.proto, dst = %flow.dst, ?pid, ?exe, ?route, "yönlendirme kararı");
+        debug!(proto = ?flow.proto, dst = %flow.dst, ?pid, ?exe, ?route, "routing decision");
         route
     }
 }

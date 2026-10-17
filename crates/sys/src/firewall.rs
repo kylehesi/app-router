@@ -1,9 +1,9 @@
-//! Windows Güvenlik Duvarı kuralı.
+//! Windows Firewall rule.
 //!
-//! TCP aktarımı, Windows'un TCP yığınındaki yerel dinleyiciye TUN üzerinden
-//! gelen bağlantılara dayanır. Güvenlik duvarı TUN'u "genel ağ" sayıp bu
-//! bağlantıları engelleyebileceğinden, yalnızca TUN içindeki iki sabit adres
-//! arasındaki TCP trafiğine izin veren dar bir kural eklenir.
+//! The TCP relay relies on connections arriving over the TUN at a local
+//! listener in the Windows TCP stack. The firewall may treat the TUN as a
+//! "public network" and block them, so we add a narrow rule that only allows
+//! TCP traffic between two fixed addresses inside the TUN.
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -18,7 +18,7 @@ fn netsh() -> Command {
     cmd
 }
 
-/// Kural tanımlı mı?
+/// Does the rule exist?
 pub fn rule_exists() -> bool {
     netsh()
         .args(["advfirewall", "firewall", "show", "rule"])
@@ -27,8 +27,8 @@ pub fn rule_exists() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// `peer → local` yönündeki gelen TCP bağlantılarına izin veren kuralı ekler
-/// (varsa önce eskisini siler). Yönetici yetkisi gerekir.
+/// Adds the rule allowing inbound TCP connections `peer -> local`
+/// (deleting any existing one first). Requires administrator rights.
 pub fn ensure_rule(local: Ipv4Addr, peer: Ipv4Addr) -> io::Result<()> {
     if rule_exists() {
         remove_rule()?;
@@ -48,7 +48,7 @@ pub fn ensure_rule(local: Ipv4Addr, peer: Ipv4Addr) -> io::Result<()> {
         .status()?;
     if !status.success() {
         return Err(io::Error::other(format!(
-            "güvenlik duvarı kuralı eklenemedi (netsh çıkış kodu {:?}); yönetici olarak çalıştırın",
+            "failed to add firewall rule (netsh exit code {:?}); run as administrator",
             status.code()
         )));
     }
@@ -61,7 +61,7 @@ pub fn remove_rule() -> io::Result<()> {
         .raw_arg(format!("name=\"{RULE_NAME}\""))
         .status()?;
     if !status.success() {
-        return Err(io::Error::other("güvenlik duvarı kuralı silinemedi"));
+        return Err(io::Error::other("failed to delete firewall rule"));
     }
     Ok(())
 }

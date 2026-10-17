@@ -1,4 +1,4 @@
-//! Windows servis yaşam döngüsü: kurma, kaldırma ve SCM'den başlatılma.
+//! Windows service lifecycle: install, uninstall and startup from the SCM.
 
 use std::ffi::OsString;
 use std::sync::Mutex;
@@ -19,22 +19,22 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::rules::data_dir;
 
-const DISPLAY_NAME: &str = "Router - Uygulama Bazlı İnternet";
+const DISPLAY_NAME: &str = "Router - Per-App Internet";
 const DESCRIPTION: &str =
-    "Uygulamaların hangi internet bağlantısını (Wi-Fi, hotspot, Ethernet) kullanacağını yönetir.";
+    "Lets you choose which internet connection (Wi-Fi, hotspot, Ethernet) each application uses.";
 
 define_windows_service!(ffi_service_main, service_main);
 
-/// SCM tarafından `router-service.exe service` ile başlatıldığında çağrılır.
+/// Called when the SCM starts us as `router-service.exe service`.
 pub fn run_dispatcher() -> Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
-        .context("servis dağıtıcısı başlatılamadı (bu komut yalnızca Windows tarafından çağrılır)")
+        .context("failed to start the service dispatcher (this command is only meant to be invoked by Windows)")
 }
 
 fn service_main(_args: Vec<OsString>) {
     init_file_logging();
     if let Err(e) = run_service() {
-        error!("servis hatayla durdu: {e:#}");
+        error!("service stopped with an error: {e:#}");
     }
 }
 
@@ -66,16 +66,16 @@ fn run_service() -> Result<()> {
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         0,
     )?;
-    info!("servis başladı");
+    info!("service started");
 
     let result = tokio::runtime::Runtime::new()
-        .context("tokio başlatılamadı")
+        .context("failed to start tokio")
         .and_then(|rt| rt.block_on(crate::run_core(rx, true)));
 
-    // Hata durumunda sıfır olmayan kod: SCM bunu çökme sayar ve kurtarma ayarına göre yeniden başlatır.
+    // Non-zero code on error: the SCM counts it as a crash and restarts us per the recovery settings.
     let code = if result.is_ok() { 0 } else { 1 };
     set_state(ServiceState::Stopped, ServiceControlAccept::empty(), code)?;
-    info!("servis durdu");
+    info!("service stopped");
     result
 }
 
@@ -100,7 +100,7 @@ pub fn install() -> Result<()> {
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
-    .context("Servis yöneticisine erişilemedi (yönetici olarak çalıştırın)")?;
+    .context("cannot access the Service Control Manager (run as administrator)")?;
 
     let info = ServiceInfo {
         name: SERVICE_NAME.into(),
@@ -116,10 +116,10 @@ pub fn install() -> Result<()> {
     };
     let service = manager
         .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
-        .context("servis oluşturulamadı (zaten kurulu olabilir)")?;
+        .context("failed to create the service (it may already be installed)")?;
     service.set_description(DESCRIPTION)?;
 
-    // Çökerse 5 sn sonra kendini yeniden başlatır.
+    // Restart automatically 5 s after a crash.
     let restart = ServiceAction {
         action_type: ServiceActionType::Restart,
         delay: Duration::from_secs(5),
@@ -132,29 +132,29 @@ pub fn install() -> Result<()> {
     })?;
     service.set_failure_actions_on_non_crash_failures(true)?;
 
-    // Windows'un ikinci bağlantıyı kendiliğinden düşürmesini engeller.
+    // Stops Windows from dropping the second connection on its own.
     match router_sys::policy::allow_simultaneous_connections() {
-        Ok(()) => println!("Eşzamanlı bağlantı politikası ayarlandı (fMinimizeConnections = 0)."),
-        Err(e) => warn!("eşzamanlı bağlantı politikası ayarlanamadı: {e}"),
+        Ok(()) => println!("Simultaneous connections policy set (fMinimizeConnections = 0)."),
+        Err(e) => warn!("failed to set the simultaneous connections policy: {e}"),
     }
     router_sys::firewall::ensure_rule(router_engine::TUN_IP, router_engine::PEER_IP)
-        .context("güvenlik duvarı kuralı eklenemedi")?;
-    println!("Güvenlik duvarı kuralı eklendi ('{}').", router_sys::firewall::RULE_NAME);
+        .context("failed to add the firewall rule")?;
+    println!("Firewall rule added ('{}').", router_sys::firewall::RULE_NAME);
 
-    service.start::<&str>(&[]).context("servis başlatılamadı")?;
-    println!("'{SERVICE_NAME}' kuruldu ve başlatıldı.");
+    service.start::<&str>(&[]).context("failed to start the service")?;
+    println!("'{SERVICE_NAME}' installed and started.");
     Ok(())
 }
 
 pub fn uninstall() -> Result<()> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .context("Servis yöneticisine erişilemedi (yönetici olarak çalıştırın)")?;
+        .context("cannot access the Service Control Manager (run as administrator)")?;
     let service = manager
         .open_service(
             SERVICE_NAME,
             ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
         )
-        .context("servis bulunamadı")?;
+        .context("service not found")?;
 
     if service.query_status()?.current_state != ServiceState::Stopped {
         service.stop()?;
@@ -169,6 +169,6 @@ pub fn uninstall() -> Result<()> {
     if router_sys::firewall::rule_exists() {
         router_sys::firewall::remove_rule()?;
     }
-    println!("'{SERVICE_NAME}' kaldırıldı.");
+    println!("'{SERVICE_NAME}' removed.");
     Ok(())
 }

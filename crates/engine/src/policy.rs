@@ -1,5 +1,5 @@
-//! Motorun "bu bağlantı hangi adaptörden çıksın?" sorusunu sorduğu arayüz.
-//! Kuralların ve adaptör listesinin ayrıntısını servis bilir; motor bilmez.
+//! The interface through which the engine asks "which adapter should this connection use?".
+//! The service knows the details of rules and the adapter list; the engine does not.
 
 use std::net::SocketAddrV4;
 
@@ -9,7 +9,7 @@ pub enum Proto {
     Udp,
 }
 
-/// Uygulamanın açtığı bağlantı. `app` her zaman TUN adresindeki yerel uçtur.
+/// A connection opened by an app. `app` is always the local end on the TUN address.
 #[derive(Debug, Clone, Copy)]
 pub struct Flow {
     pub proto: Proto,
@@ -19,14 +19,14 @@ pub struct Flow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
-    /// Bu index'teki arayüzden çık.
+    /// Leave through the interface with this index.
     Interface(u32),
-    /// Bağlantıyı reddet.
+    /// Reject the connection.
     Block,
 }
 
 pub trait Policy: Send + Sync + 'static {
-    /// Engelleyen çağrılar yapabilir (süreç tablosu vb.); motor bunu ayrı bir iş
-    /// parçacığında çağırır.
+    /// May make blocking calls (process table etc.); the engine calls it on a
+    /// separate thread.
     fn route(&self, flow: &Flow) -> Route;
 }

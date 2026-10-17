@@ -1,4 +1,4 @@
-//! Süreç listesi, exe yolları ve "hangi soket hangi sürece ait" tabloları.
+//! Process list, exe paths and "which socket belongs to which process" tables.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
@@ -47,12 +47,12 @@ pub enum Proto {
 pub struct SocketEntry {
     pub proto: Proto,
     pub local: SocketAddr,
-    /// Dinleyen TCP soketlerinde ve UDP'de yoktur.
+    /// Absent for listening TCP sockets and for UDP.
     pub remote: Option<SocketAddr>,
     pub pid: u32,
 }
 
-/// Çalışan tüm süreçler (yönetici yetkisi gerekmez).
+/// All running processes (no administrator rights needed).
 pub fn list_processes() -> io::Result<Vec<ProcessEntry>> {
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
@@ -74,7 +74,7 @@ pub fn list_processes() -> io::Result<Vec<ProcessEntry>> {
     Ok(out)
 }
 
-/// Sürecin tam exe yolu. Korumalı sistem süreçlerinde `None` dönebilir.
+/// Full exe path of the process. May return `None` for protected system processes.
 pub fn process_path(pid: u32) -> Option<String> {
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h.is_null() {
@@ -87,7 +87,7 @@ pub fn process_path(pid: u32) -> Option<String> {
     (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-/// Sistemdeki tüm TCP ve UDP soketleri, sahibi olan PID ile birlikte.
+/// All TCP and UDP sockets on the system, with their owning PID.
 pub fn socket_table() -> io::Result<Vec<SocketEntry>> {
     let mut out = tcp4_sockets()?;
     out.extend(tcp6_sockets()?);
@@ -96,7 +96,7 @@ pub fn socket_table() -> io::Result<Vec<SocketEntry>> {
     Ok(out)
 }
 
-/// `local → remote` IPv4 TCP bağlantısının sahibi olan süreç.
+/// Process owning the IPv4 TCP connection `local -> remote`.
 pub fn tcp4_owner(local: SocketAddrV4, remote: SocketAddrV4) -> io::Result<Option<u32>> {
     let (local, remote) = (SocketAddr::V4(local), Some(SocketAddr::V4(remote)));
     Ok(tcp4_sockets()?
@@ -105,8 +105,8 @@ pub fn tcp4_owner(local: SocketAddrV4, remote: SocketAddrV4) -> io::Result<Optio
         .map(|s| s.pid))
 }
 
-/// `local` adresindeki IPv4 UDP soketinin sahibi olan süreç. Soket 0.0.0.0'a
-/// bağlıysa yalnızca port eşleşir.
+/// Process owning the IPv4 UDP socket at `local`. If the socket is bound to
+/// 0.0.0.0, only the port is matched.
 pub fn udp4_owner(local: SocketAddrV4) -> io::Result<Option<u32>> {
     let sockets = udp4_sockets()?;
     let exact = SocketAddr::V4(local);
@@ -118,7 +118,7 @@ pub fn udp4_owner(local: SocketAddrV4) -> io::Result<Option<u32>> {
         .map(|s| s.pid))
 }
 
-/// Sürecin küçük harfli exe adı ("chrome.exe"); kural anahtarıyla aynı biçim.
+/// Lowercase exe name of the process ("chrome.exe"); same format as the rule key.
 pub fn exe_name(pid: u32) -> Option<String> {
     let path = process_path(pid)?;
     let name = path.rsplit(['\\', '/']).next()?;
@@ -189,7 +189,7 @@ fn udp6_sockets() -> io::Result<Vec<SocketEntry>> {
         .collect())
 }
 
-/// Soketi olan uygulamalar, exe adına göre gruplanmış ve sıralanmış.
+/// Apps that have sockets, grouped and sorted by exe name.
 pub fn network_apps() -> io::Result<Vec<AppInfo>> {
     let names: HashMap<u32, String> = list_processes()?
         .into_iter()
@@ -229,7 +229,7 @@ pub fn network_apps() -> io::Result<Vec<AppInfo>> {
         .collect())
 }
 
-/// GetExtended*Table çağrısını yeterli tampon bulunana kadar tekrarlar.
+/// Repeats the GetExtended*Table call until the buffer is large enough.
 fn fetch_table(f: impl Fn(*mut c_void, *mut u32) -> u32) -> io::Result<Vec<u64>> {
     let mut size = 0u32;
     for _ in 0..8 {
@@ -240,13 +240,13 @@ fn fetch_table(f: impl Fn(*mut c_void, *mut u32) -> u32) -> io::Result<Vec<u64>>
             e => return Err(win32_err(e)),
         }
     }
-    Err(io::Error::other("soket tablosu alınamadı (boyut sürekli değişti)"))
+    Err(io::Error::other("failed to get socket table (size kept changing)"))
 }
 
-/// MIB_*TABLE yapılarının hepsi `{ dwNumEntries: u32, table: [ROW; 1] }` şeklindedir.
+/// All MIB_*TABLE structs have the shape `{ dwNumEntries: u32, table: [ROW; 1] }`.
 ///
 /// # Safety
-/// `buf`, `T` tipinde geçerli bir tablo içermelidir.
+/// `buf` must contain a valid table of type `T`.
 unsafe fn rows<T, R>(buf: &[u64]) -> &[R] {
     let count = *(buf.as_ptr() as *const u32) as usize;
     let offset = std::mem::size_of::<T>() - std::mem::size_of::<R>();
@@ -254,7 +254,7 @@ unsafe fn rows<T, R>(buf: &[u64]) -> &[R] {
     std::slice::from_raw_parts(first, count)
 }
 
-/// Port, DWORD'ün alt 16 bitinde ağ bayt sırasıyla tutulur.
+/// The port is stored in the low 16 bits of the DWORD, in network byte order.
 fn port(raw: u32) -> u16 {
     u16::from_be(raw as u16)
 }
@@ -267,7 +267,7 @@ fn v6(addr: [u8; 16], raw_port: u32) -> SocketAddr {
     SocketAddr::new(IpAddr::V6(Ipv6Addr::from(addr)), port(raw_port))
 }
 
-// `rows` ofset hesabının varsayımı (tablo = u32 sayaç + tek satır) derleme zamanında doğrulanır.
+// Compile-time check of the `rows` offset assumption (table = u32 count + one row).
 const _: () = {
     use std::mem::size_of;
     assert!(size_of::<MIB_TCPTABLE_OWNER_PID>() == 4 + size_of::<MIB_TCPROW_OWNER_PID>());

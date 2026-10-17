@@ -1,8 +1,8 @@
-//! Giden soketleri belirli bir ağ adaptörüne bağlama.
+//! Binding outbound sockets to a specific network adapter.
 //!
-//! `IP_UNICAST_IF` / `IPV6_UNICAST_IF`, soketin hangi arayüzden çıkacağını
-//! rota tablosundan bağımsız olarak belirler. Windows'un "strong host" modeli
-//! sayesinde kaynak IP de o adaptörün IP'si olur.
+//! `IP_UNICAST_IF` / `IPV6_UNICAST_IF` pick the interface a socket leaves through,
+//! independent of the routing table. Thanks to Windows' "strong host" model, the
+//! source IP also becomes that adapter's IP.
 
 use std::io;
 use std::net::SocketAddr;
@@ -16,9 +16,9 @@ use windows_sys::Win32::Networking::WinSock::{
     SOCKET, SOCKET_ERROR,
 };
 
-/// Soketin trafiğini `if_index` numaralı arayüzden çıkmaya zorlar.
+/// Forces the socket's traffic out through the interface with index `if_index`.
 pub fn set_unicast_interface(sock: RawSocket, ipv6: bool, if_index: u32) -> io::Result<()> {
-    // IPv4'te index ağ bayt sırasında, IPv6'da makine sırasında verilir (MS dokümantasyonu).
+    // IPv4 takes the index in network byte order, IPv6 in host byte order (per MS docs).
     let (level, name, value) = if ipv6 {
         (IPPROTO_IPV6, IPV6_UNICAST_IF, if_index)
     } else {
@@ -39,7 +39,7 @@ pub fn set_unicast_interface(sock: RawSocket, ipv6: bool, if_index: u32) -> io::
     Ok(())
 }
 
-/// `dst`'ye, yalnızca `if_index` adaptörü üzerinden TCP bağlantısı açar.
+/// Opens a TCP connection to `dst` through the `if_index` adapter only.
 pub async fn connect_tcp(dst: SocketAddr, if_index: u32) -> io::Result<TcpStream> {
     let sock = if dst.is_ipv4() { TcpSocket::new_v4()? } else { TcpSocket::new_v6()? };
     set_unicast_interface(sock.as_raw_socket(), dst.is_ipv6(), if_index)?;
@@ -48,7 +48,7 @@ pub async fn connect_tcp(dst: SocketAddr, if_index: u32) -> io::Result<TcpStream
     Ok(stream)
 }
 
-/// `if_index` adaptöründen çıkan bir UDP soketi açar.
+/// Opens a UDP socket that leaves through the `if_index` adapter.
 pub async fn bind_udp(ipv6: bool, if_index: u32) -> io::Result<UdpSocket> {
     let local: SocketAddr = if ipv6 { "[::]:0" } else { "0.0.0.0:0" }.parse().unwrap();
     let sock = UdpSocket::bind(local).await?;
@@ -56,15 +56,15 @@ pub async fn bind_udp(ipv6: bool, if_index: u32) -> io::Result<UdpSocket> {
     Ok(sock)
 }
 
-/// Seçilen adaptör üzerinden internete çıkıp dış (public) IPv4 adresini öğrenir.
-/// Adaptör bağlamasının çalıştığını doğrulamak için kullanılır.
+/// Reaches the internet through the chosen adapter and fetches its public IPv4 address.
+/// Used to verify that adapter binding works.
 pub async fn public_ipv4_via(if_index: u32) -> io::Result<String> {
     const HOST: &str = "api.ipify.org";
     let fut = async {
         let dst = tokio::net::lookup_host((HOST, 80))
             .await?
             .find(SocketAddr::is_ipv4)
-            .ok_or_else(|| io::Error::other("api.ipify.org için IPv4 adresi bulunamadı"))?;
+            .ok_or_else(|| io::Error::other("no IPv4 address found for api.ipify.org"))?;
         let mut s = connect_tcp(dst, if_index).await?;
         s.write_all(format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes())
             .await?;
@@ -73,11 +73,11 @@ pub async fn public_ipv4_via(if_index: u32) -> io::Result<String> {
         let resp = String::from_utf8_lossy(&resp);
         let body = resp.split("\r\n\r\n").nth(1).unwrap_or_default().trim();
         if body.is_empty() {
-            return Err(io::Error::other("boş yanıt"));
+            return Err(io::Error::other("empty response"));
         }
         Ok(body.to_string())
     };
     tokio::time::timeout(Duration::from_secs(8), fut)
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "zaman aşımı (8 sn)"))?
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out (8 s)"))?
 }

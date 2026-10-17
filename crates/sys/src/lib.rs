@@ -1,5 +1,5 @@
-//! Windows API sarmalayıcıları: adaptörler, Wi-Fi, süreçler, soket tabloları,
-//! yetki ve sistem politikası. `unsafe` kodun tamamı bu crate'te toplanır.
+//! Windows API wrappers: adapters, Wi-Fi, processes, socket tables,
+//! elevation and system policy. All `unsafe` code lives in this crate.
 
 pub mod adapters;
 pub mod console;

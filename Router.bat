@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 
-rem Yönetici değilse kendini yönetici olarak yeniden başlat (UAC onayı istenir).
+rem If not running as administrator, relaunch elevated (shows a UAC prompt).
 net session >nul 2>&1
 if errorlevel 1 (
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
@@ -12,13 +12,13 @@ if errorlevel 1 (
 cd /d "%~dp0"
 set "BIN=%~dp0target\release"
 if not exist "%BIN%\router-service.exe" (
-    echo [HATA] %BIN%\router-service.exe bulunamadı.
-    echo        Önce derleyin:  cargo build --release
+    echo [ERROR] %BIN%\router-service.exe not found.
+    echo         Build it first:  cargo build --release
     pause
     exit /b 1
 )
 if not exist "%BIN%\wintun.dll" (
-    echo wintun.dll eksik, indiriliyor...
+    echo wintun.dll is missing, downloading...
     powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\fetch-wintun.ps1"
 )
 set "SVC=%BIN%\router-service.exe"
@@ -27,21 +27,21 @@ title Router
 :menu
 cls
 echo ==================================================
-echo   Router - Uygulama Bazlı İnternet
+echo   Router - Per-App Internet
 echo ==================================================
 echo.
-echo   1. Uygulamayı başlat (yönlendirme + arayüz)
-echo   2. Motor testi
-echo   3. Motor testi (belirli bir adaptörle)
-echo   4. Adaptörleri listele
-echo   5. Bir adaptörden dış IP'yi göster
-echo   6. Ağ kullanan uygulamaları listele
-echo   7. Sistem kontrolü (doctor)
-echo   8. Güvenlik duvarı kuralını ekle
-echo   0. Çıkış
+echo   1. Start the app (routing + UI)
+echo   2. Engine test
+echo   3. Engine test (with a specific adapter)
+echo   4. List adapters
+echo   5. Show the public IP through an adapter
+echo   6. List apps using the network
+echo   7. System check (doctor)
+echo   8. Add the firewall rule
+echo   0. Exit
 echo.
 set "CHOICE="
-set /p "CHOICE=Seçiminiz: "
+set /p "CHOICE=Your choice: "
 
 if "%CHOICE%"=="1" goto start
 if "%CHOICE%"=="2" goto enginetest
@@ -56,13 +56,13 @@ goto menu
 
 :start
 echo.
-echo Arayüz açılıyor. Yönlendirme bu pencerede çalışacak.
-echo Durdurmak için bu pencerede Ctrl+C'ye basın; internet hemen normale döner.
+echo Opening the UI. Routing runs in this window.
+echo To stop, press Ctrl+C in this window; networking returns to normal right away.
 echo.
 start "" "%BIN%\router-ui.exe"
 "%SVC%" run --engine
 echo.
-echo Yönlendirme durdu.
+echo Routing stopped.
 pause
 goto menu
 
@@ -78,7 +78,7 @@ echo.
 "%SVC%" adapters
 echo.
 set "ADAPTER="
-set /p "ADAPTER=Adaptör adı (örn. Wi-Fi veya Ethernet 2): "
+set /p "ADAPTER=Adapter name (e.g. Wi-Fi or Ethernet 2): "
 if "%ADAPTER%"=="" goto menu
 echo.
 "%SVC%" engine-test "%ADAPTER%"
@@ -98,7 +98,7 @@ echo.
 "%SVC%" adapters
 echo.
 set "ADAPTER="
-set /p "ADAPTER=Adaptör adı (örn. Wi-Fi veya Ethernet 2): "
+set /p "ADAPTER=Adapter name (e.g. Wi-Fi or Ethernet 2): "
 if "%ADAPTER%"=="" goto menu
 echo.
 "%SVC%" probe "%ADAPTER%"

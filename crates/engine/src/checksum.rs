@@ -1,9 +1,9 @@
-//! İnternet sağlama toplamı (RFC 1071) ve artımlı güncelleme (RFC 1624).
+//! Internet checksum (RFC 1071) and incremental update (RFC 1624).
 //!
-//! Paket başına yalnızca değişen alanlar hesaplanır; paketin tamamı yeniden
-//! taranmaz. Yüksek veri hızında CPU yükünü sabit tutan şey budur.
+//! Only the changed fields are recomputed per packet; the whole packet is never
+//! rescanned. This is what keeps CPU load flat at high throughput.
 
-/// `data`'yı 16 bitlik big-endian kelimeler olarak toplama ekler.
+/// Adds `data` to the sum as 16-bit big-endian words.
 pub fn add(mut acc: u32, data: &[u8]) -> u32 {
     let (words, rest) = data.as_chunks::<2>();
     for w in words {
@@ -15,7 +15,7 @@ pub fn add(mut acc: u32, data: &[u8]) -> u32 {
     acc
 }
 
-/// Toplamı katlayıp birler tümleyenini alır.
+/// Folds the sum and takes its ones' complement.
 pub fn finish(mut acc: u32) -> u16 {
     while acc > 0xffff {
         acc = (acc & 0xffff) + (acc >> 16);
@@ -23,8 +23,8 @@ pub fn finish(mut acc: u32) -> u16 {
     !(acc as u16)
 }
 
-/// Bir alan `old` → `new` olarak değiştiğinde sağlama toplamını günceller:
-/// `HC' = ~(~HC + ~m + m')` (RFC 1624, eşitlik 3). Uzunluklar eşit ve çift olmalıdır.
+/// Updates the checksum when a field changes from `old` -> `new`:
+/// `HC' = ~(~HC + ~m + m')` (RFC 1624, eqn. 3). Lengths must be equal and even.
 pub fn update(check: u16, old: &[u8], new: &[u8]) -> u16 {
     debug_assert_eq!(old.len(), new.len());
     debug_assert_eq!(old.len() % 2, 0);
@@ -36,13 +36,13 @@ pub fn update(check: u16, old: &[u8], new: &[u8]) -> u16 {
     finish(acc)
 }
 
-/// TCP/UDP için IPv4 sözde başlığının toplamı.
+/// Sum of the IPv4 pseudo-header for TCP/UDP.
 pub fn pseudo_v4(src: [u8; 4], dst: [u8; 4], protocol: u8, len: u16) -> u32 {
     let acc = add(add(0, &src), &dst);
     acc + u32::from(protocol) + u32::from(len)
 }
 
-/// TCP/UDP için IPv6 sözde başlığının toplamı (RFC 8200 bölüm 8.1).
+/// Sum of the IPv6 pseudo-header for TCP/UDP (RFC 8200 section 8.1).
 pub fn pseudo_v6(src: [u8; 16], dst: [u8; 16], next_header: u8, len: u32) -> u32 {
     let acc = add(add(0, &src), &dst);
     acc + (len >> 16) + (len & 0xffff) + u32::from(next_header)
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn rfc1071_example() {
-        // RFC 1071 bölüm 3'teki örnek: toplam 0xddf2, sağlama toplamı ~0xddf2.
+        // Example from RFC 1071 section 3: sum 0xddf2, checksum ~0xddf2.
         let data = [0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7];
         assert_eq!(finish(add(0, &data)), !0xddf2);
     }

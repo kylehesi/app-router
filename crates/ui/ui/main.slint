@@ -23,7 +23,7 @@ component StatusDot inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    title: "Router - Uygulama Bazlı İnternet";
+    title: "Router - Per-App Internet";
     preferred-width: 860px;
     preferred-height: 640px;
     min-width: 560px;
@@ -60,13 +60,13 @@ export component MainWindow inherits Window {
                 vertical-alignment: center;
             }
             Button {
-                text: "Yenile";
+                text: "Refresh";
                 clicked => { root.refresh(); }
             }
         }
 
         Text {
-            text: "İnternet bağlantıları";
+            text: "Internet connections";
             font-size: 15px;
             font-weight: 600;
         }
@@ -97,13 +97,13 @@ export component MainWindow inherits Window {
                 }
             }
             if root.adapters.length == 0: Text {
-                text: root.service-online ? "Adaptör bulunamadı." : "Servise bağlanılamıyor.";
+                text: root.service-online ? "No adapters found." : "Cannot connect to the service.";
                 opacity: 0.7;
             }
         }
 
         Text {
-            text: "Uygulamalar";
+            text: "Applications";
             font-size: 15px;
             font-weight: 600;
         }
@@ -112,7 +112,7 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             for app in root.apps: HorizontalLayout {
                 padding: 6px;
-                padding-right: 18px; // kaydırma çubuğu için boşluk
+                padding-right: 18px; // room for the scrollbar
                 spacing: 12px;
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -138,7 +138,7 @@ export component MainWindow inherits Window {
         }
 
         Text {
-            text: "Değişiklikler, uygulamanın bundan sonra açacağı bağlantılara uygulanır.";
+            text: "Changes apply to new connections the app opens from now on.";
             font-size: 12px;
             opacity: 0.7;
         }

@@ -1,4 +1,4 @@
-//! Veri yolu: TUN okuyucu, TCP NAT aktarma ve UDP oturumları.
+//! Data path: TUN reader, TCP NAT relay and UDP sessions.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
@@ -20,32 +20,32 @@ use crate::packet::{self, IPV4_HEADER_LEN, PROTO_TCP, PROTO_UDP, TCP_ACK, TCP_SY
 use crate::policy::{Flow, Policy, Proto, Route};
 use crate::tun::Tun;
 
-/// TUN'un kendi adresi. 198.18.0.0/15 kıyaslama testleri için ayrılmıştır (RFC 2544);
-/// ev ve iş ağlarıyla çakışmaz.
+/// The TUN's own address. 198.18.0.0/15 is reserved for benchmarking (RFC 2544),
+/// so it does not clash with home or office networks.
 pub const TUN_IP: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 1);
-/// NAT'ta yerel dinleyiciye bağlanan "karşı taraf" adresi.
+/// The "peer" address that connects to the local listener in the NAT.
 pub const PEER_IP: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 2);
 pub const TUN_PREFIX_LEN: u8 = 30;
-/// Büyük MTU: uygulama tarafında daha az ve daha büyük paket, daha az işlemci yükü.
-/// Bu paketler TUN'dan dışarı çıkmaz; dış bağlantılar adaptörün kendi MTU'sunu kullanır.
+/// Large MTU: fewer, bigger packets on the app side means less CPU load.
+/// These packets never leave the TUN; outbound connections use the adapter's own MTU.
 pub const TUN_MTU: u32 = 9000;
 
-/// TUN'un IPv6 adresi (ULA, RFC 4193). IPv6 trafiğinin TUN'dan çıkabilmesi için
-/// Windows'un bu arayüzde bir kaynak adresi bulması gerekir.
+/// The TUN's IPv6 address (ULA, RFC 4193). For IPv6 traffic to go out via the TUN,
+/// Windows needs a source address on this interface.
 pub const TUN_IP6: Ipv6Addr = Ipv6Addr::new(0xfd52, 0x6f75, 0x7465, 0, 0, 0, 0, 1);
 const TUN_IP6_PREFIX_LEN: u8 = 64;
 
-/// Tüm trafiği TUN'a alan rotalar. IPv4'teki iki /1 rotası, varsayılan rotadan
-/// (0.0.0.0/0) daha özel oldukları için onu silmeden önce gelir. IPv6'da internetin
-/// tamamı (2000::/3) TUN'a alınır ve reddedilir: uygulamalar IPv4'e geçer, böylece
-/// hiçbir bağlantı kuralları IPv6 üzerinden atlayamaz.
+/// Routes that pull all traffic into the TUN. The two IPv4 /1 routes are more specific
+/// than the default route (0.0.0.0/0), so they take precedence without deleting it. For
+/// IPv6 the whole internet (2000::/3) is sent to the TUN and rejected: apps fall back to
+/// IPv4, so no connection can bypass the rules over IPv6.
 pub const FULL_TUNNEL: [IpPrefix; 3] = [
     IpPrefix::v4(Ipv4Addr::new(0, 0, 0, 0), 1),
     IpPrefix::v4(Ipv4Addr::new(128, 0, 0, 0), 1),
     IpPrefix::v6(Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0), 3),
 ];
 
-/// Hedef TUN'un kendi alt ağında mı (ağ/yayın adresi dahil)? Bunlar internete gitmez.
+/// Is the destination in the TUN's own subnet (network/broadcast included)? Those never go to the internet.
 fn in_tun_net(ip: &Ipv4Addr) -> bool {
     let mask = u32::MAX << (32 - TUN_PREFIX_LEN);
     u32::from(*ip) & mask == u32::from(TUN_IP) & mask
@@ -53,9 +53,9 @@ fn in_tun_net(ip: &Ipv4Addr) -> bool {
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_BUF: usize = 64 * 1024;
-/// Aktarma bittikten sonra kapanış paketleri için NAT kaydının tutulduğu süre.
+/// How long a NAT entry is kept after the relay ends, for closing packets.
 const NAT_LINGER: Duration = Duration::from_secs(5);
-/// Kabul edilmeden bekleyen (cevapsız) NAT kayıtlarının ömrü.
+/// Lifetime of NAT entries still waiting to be accepted (unanswered).
 const NAT_PENDING_TTL: Duration = Duration::from_secs(30);
 const UDP_IDLE: Duration = Duration::from_secs(60);
 const DNS_IDLE: Duration = Duration::from_secs(15);
@@ -64,11 +64,11 @@ const UDP_SESSION_QUEUE: usize = 256;
 
 pub struct EngineConfig {
     pub wintun_dll: PathBuf,
-    /// TUN'a yönlendirilecek ön ekler; normal kullanımda [`FULL_TUNNEL`].
+    /// Prefixes to route into the TUN; normally [`FULL_TUNNEL`].
     pub routes: Vec<IpPrefix>,
 }
 
-/// Çalışan motor. Düşürüldüğünde (drop) rotaları kaldırır ve TUN'u kapatır.
+/// The running engine. On drop it removes the routes and closes the TUN.
 pub struct Engine {
     routes: Option<RouteGuard>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -78,17 +78,17 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// TUN'u açar ve yapılandırır, aktarma görevlerini başlatır, en son da rotaları
-    /// ekler: rota eklendiği anda trafiği karşılayacak her şey hazırdır.
+    /// Opens and configures the TUN, starts the relay tasks, and adds the routes last:
+    /// by the time a route exists, everything needed to handle the traffic is ready.
     pub async fn start(config: EngineConfig, policy: Arc<dyn Policy>) -> Result<Self> {
         let tun = Tun::open(&config.wintun_dll)?;
         let if_index = tun.if_index()?;
         netcfg::set_address(if_index, IpAddr::V4(TUN_IP), TUN_PREFIX_LEN)
-            .context("TUN adresi atanamadı")?;
+            .context("failed to assign TUN address")?;
         netcfg::set_address(if_index, IpAddr::V6(TUN_IP6), TUN_IP6_PREFIX_LEN)
-            .context("TUN IPv6 adresi atanamadı")?;
+            .context("failed to assign TUN IPv6 address")?;
         if let Err(e) = netcfg::set_ipv4_mtu(if_index, TUN_MTU) {
-            warn!("TUN MTU ayarlanamadı, varsayılan kullanılacak: {e}");
+            warn!("failed to set TUN MTU, using default: {e}");
         }
 
         let listener = bind_listener().await?;
@@ -113,12 +113,12 @@ impl Engine {
         ];
 
         let mut engine = Self { routes: None, tasks, reader: Some(reader), tun, if_index };
-        engine.routes = Some(netcfg::add_routes(if_index, &config.routes).context("rotalar eklenemedi")?);
-        info!(if_index, %TUN_IP, listener_port, routes = ?config.routes, "motor başladı");
+        engine.routes = Some(netcfg::add_routes(if_index, &config.routes).context("failed to add routes")?);
+        info!(if_index, %TUN_IP, listener_port, routes = ?config.routes, "engine started");
         Ok(engine)
     }
 
-    /// TUN arayüzünün index'i (varsayılan adaptör seçiminde hariç tutmak için).
+    /// Index of the TUN interface (to exclude it when picking the default adapter).
     pub fn if_index(&self) -> u32 {
         self.if_index
     }
@@ -126,7 +126,7 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        // Önce rotalar: trafik hemen normal adaptörlere döner.
+        // Routes first: traffic immediately falls back to the regular adapters.
         drop(self.routes.take());
         for task in &self.tasks {
             task.abort();
@@ -135,24 +135,24 @@ impl Drop for Engine {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        info!("motor durdu");
+        info!("engine stopped");
     }
 }
 
 async fn bind_listener() -> Result<TcpListener> {
     let addr = SocketAddr::V4(SocketAddrV4::new(TUN_IP, 0));
-    // Adres yeni atandıysa kullanılabilir olması kısa sürebilir.
+    // A freshly assigned address may take a moment to become usable.
     let mut attempt = 0;
     loop {
         let sock = TcpSocket::new_v4()?;
         match sock.bind(addr) {
             Ok(()) => return Ok(sock.listen(4096)?),
             Err(e) if attempt < 30 => {
-                debug!("dinleyici henüz bağlanamadı: {e}");
+                debug!("listener could not bind yet: {e}");
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Err(e) => return Err(e).context("TUN dinleyicisi açılamadı"),
+            Err(e) => return Err(e).context("failed to open TUN listener"),
         }
     }
 }
@@ -172,14 +172,14 @@ struct Shared {
 }
 
 impl Shared {
-    /// TUN'dan paket okur. TCP burada, kopyalamadan önce yerinde yeniden yazılır;
-    /// UDP, oturum görevlerine aktarılır. `shutdown` çağrılınca biter.
+    /// Reads packets from the TUN. TCP is rewritten in place here, before copying;
+    /// UDP is handed off to the session tasks. Returns once `shutdown` is called.
     fn reader_loop(&self) {
         while let Ok(pkt) = self.session.receive_blocking() {
             let data = pkt.bytes();
             if data.first().is_some_and(|b| b >> 4 == 6) {
-                // IPv6 henüz taşınmıyor: TCP'yi anında reddet (uygulama IPv4'e geçer),
-                // geri kalanı (UDP/QUIC) düşür; tarayıcılar TCP'ye döner.
+                // IPv6 is not carried yet: reject TCP immediately (the app falls back to
+                // IPv4) and drop the rest (UDP/QUIC); browsers fall back to TCP.
                 if let Some(rst) = packet::v6_tcp_rst(data) {
                     self.inject(rst.len(), |out| out.copy_from_slice(&rst));
                 }
@@ -209,11 +209,11 @@ impl Shared {
             && src.port() == self.listener_port
             && *dst.ip() == PEER_IP
         {
-            // Dinleyiciden uygulamaya: uzak sunucudan geliyormuş gibi göster.
+            // Listener to app: make it look like it came from the remote server.
             let Some(entry) = self.nat.inbound(dst.port()) else { return };
             (entry.dst, SocketAddrV4::new(TUN_IP, entry.app_port))
         } else if *src.ip() == TUN_IP && !in_tun_net(dst.ip()) {
-            // Uygulamadan dışarı: yerel dinleyiciye çevir.
+            // App to outside: redirect to the local listener.
             let flags = data[ihl + 13];
             let syn = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
             let Some(nat_port) = self.nat.outbound(src.port(), dst, syn) else { return };
@@ -248,11 +248,11 @@ impl Shared {
             dst,
             payload: data[ihl + UDP_HEADER_LEN..end].to_vec(),
         };
-        // Kuyruk doluysa düşür: UDP zaten kayıplı bir protokoldür, okuyucu asla beklememeli.
+        // Drop if the queue is full: UDP is lossy anyway, and the reader must never block.
         let _ = self.udp_tx.try_send(datagram);
     }
 
-    /// Uzak `from` adresinden gelen UDP verisini uygulamaya teslim eder.
+    /// Delivers UDP data from the remote `from` address to the app.
     fn write_udp(&self, from: SocketAddrV4, app_port: u16, payload: &[u8]) {
         let len = IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len();
         if len > TUN_MTU as usize {
@@ -263,10 +263,10 @@ impl Shared {
         self.inject(len, |out| packet::write_v4_udp(out, id, from, to, payload));
     }
 
-    /// Windows'a TUN'dan "gelen" bir paket teslim eder.
+    /// Hands Windows a packet as if it "arrived" from the TUN.
     fn inject(&self, len: usize, fill: impl FnOnce(&mut [u8])) {
         let Ok(len) = u16::try_from(len) else { return };
-        // Gönderme halkası doluysa paket düşer; TCP yeniden gönderir.
+        // If the send ring is full the packet is dropped; TCP retransmits.
         if let Ok(mut out) = self.session.allocate_send_packet(len) {
             fill(out.bytes_mut());
             self.session.send_packet(out);
@@ -286,14 +286,14 @@ async fn tcp_accept_loop(shared: Arc<Shared>, policy: Arc<dyn Policy>, listener:
         let (stream, peer) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
-                warn!("TUN dinleyicisi hata verdi: {e}");
+                warn!("TUN listener error: {e}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
         let SocketAddr::V4(peer) = peer else { continue };
         if *peer.ip() != PEER_IP {
-            continue; // NAT dışından gelen bağlantı
+            continue; // connection that did not come through the NAT
         }
         let Some(entry) = shared.nat.activate(peer.port()) else { continue };
         let (shared, policy) = (shared.clone(), policy.clone());
@@ -312,18 +312,18 @@ async fn relay_tcp(policy: &Arc<dyn Policy>, mut inbound: TcpStream, entry: NatE
         dst: entry.dst,
     };
     let Route::Interface(if_index) = decide(policy, flow).await else {
-        debug!(dst = %entry.dst, "TCP engellendi");
+        debug!(dst = %entry.dst, "TCP blocked");
         return;
     };
     let connect = tokio::time::timeout(CONNECT_TIMEOUT, bind::connect_tcp(entry.dst.into(), if_index));
     let mut outbound = match connect.await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            debug!(dst = %entry.dst, if_index, "bağlanılamadı: {e}");
+            debug!(dst = %entry.dst, if_index, "connect failed: {e}");
             return;
         }
         Err(_) => {
-            debug!(dst = %entry.dst, if_index, "bağlantı zaman aşımı");
+            debug!(dst = %entry.dst, if_index, "connect timeout");
             return;
         }
     };
@@ -331,12 +331,12 @@ async fn relay_tcp(policy: &Arc<dyn Policy>, mut inbound: TcpStream, entry: NatE
     match tokio::io::copy_bidirectional_with_sizes(&mut inbound, &mut outbound, RELAY_BUF, RELAY_BUF)
         .await
     {
-        Ok((up, down)) => debug!(dst = %entry.dst, if_index, up, down, "TCP kapandı"),
-        Err(e) => debug!(dst = %entry.dst, if_index, "TCP aktarma bitti: {e}"),
+        Ok((up, down)) => debug!(dst = %entry.dst, if_index, up, down, "TCP closed"),
+        Err(e) => debug!(dst = %entry.dst, if_index, "TCP relay ended: {e}"),
     }
 }
 
-/// UDP paketlerini uygulama portuna göre oturumlara dağıtır.
+/// Dispatches UDP packets to sessions by app port.
 async fn udp_dispatch(shared: Arc<Shared>, policy: Arc<dyn Policy>, mut rx: mpsc::Receiver<UdpDatagram>) {
     let mut sessions: HashMap<u16, mpsc::Sender<UdpDatagram>> = HashMap::new();
     while let Some(datagram) = rx.recv().await {
@@ -344,7 +344,7 @@ async fn udp_dispatch(shared: Arc<Shared>, policy: Arc<dyn Policy>, mut rx: mpsc
         let datagram = match sessions.get(&port) {
             Some(tx) => match tx.try_send(datagram) {
                 Ok(()) | Err(TrySendError::Full(_)) => continue,
-                Err(TrySendError::Closed(d)) => d, // oturum boşta kalıp bitmiş; yenisini aç
+                Err(TrySendError::Closed(d)) => d, // session ended after idling; open a new one
             },
             None => datagram,
         };
@@ -358,9 +358,9 @@ async fn udp_dispatch(shared: Arc<Shared>, policy: Arc<dyn Policy>, mut rx: mpsc
     }
 }
 
-/// Bir uygulama portunun UDP oturumu. Port başına tek giden soket kullanılır
-/// ("full cone"): uygulama aynı porttan farklı hedeflere gönderebilir, her yerden
-/// gelen cevabı alır. Oyunlar, QUIC ve STUN bunu bekler.
+/// UDP session for one app port. A single outbound socket is used per port
+/// ("full cone"): the app can send to different destinations from the same port and
+/// receives replies from anywhere. Games, QUIC and STUN expect this.
 async fn udp_session(
     shared: Arc<Shared>,
     policy: Arc<dyn Policy>,
@@ -378,14 +378,14 @@ async fn udp_session(
         Route::Interface(if_index) => match bind::bind_udp(false, if_index).await {
             Ok(sock) => Some(sock),
             Err(e) => {
-                debug!(app_port, if_index, "UDP soketi açılamadı: {e}");
+                debug!(app_port, if_index, "failed to open UDP socket: {e}");
                 None
             }
         },
         Route::Block => None,
     };
     let Some(sock) = sock else {
-        // Engellenen oturum: paketleri yut, her pakette yeniden karar verilmesin.
+        // Blocked session: swallow packets so we don't re-decide on every packet.
         while let Ok(Some(_)) = tokio::time::timeout(idle, rx.recv()).await {}
         return;
     };
@@ -399,7 +399,7 @@ async fn udp_session(
                 None => return,
             },
             received = sock.recv_from(&mut buf) => {
-                // Hata (örn. ICMP "port kapalı" → WSAECONNRESET) oturumu bitirmez.
+                // Errors (e.g. ICMP "port unreachable" -> WSAECONNRESET) don't end the session.
                 if let Ok((n, SocketAddr::V4(from))) = received {
                     shared.write_udp(from, app_port, &buf[..n]);
                 }
@@ -415,7 +415,7 @@ async fn nat_sweeper(shared: Arc<Shared>) {
         tick.tick().await;
         let removed = shared.nat.expire(NAT_PENDING_TTL);
         if removed > 0 {
-            debug!(removed, active = shared.nat.len(), "cevapsız NAT kayıtları silindi");
+            debug!(removed, active = shared.nat.len(), "removed unanswered NAT entries");
         }
     }
 }

@@ -1,16 +1,17 @@
-//! Yönlendirme motoru.
+//! Routing engine.
 //!
 //! ```text
-//! uygulama ──► Wintun TUN (0.0.0.0/1 + 128.0.0.0/1) ──► tun-reader iş parçacığı
-//!                                                          │
-//!   TCP: "system stack" NAT. Paket yerinde yeniden yazılıp Windows'un kendi
-//!        TCP yığınındaki yerel dinleyiciye verilir; TCP'yi Windows sonlandırır.
-//!   UDP: uygulama portu başına bir oturum.
-//!                                                          │
-//!   Policy::route(flow) → hangi adaptör? (servis: soket → PID → exe → kural)
-//!                                                          │
-//!   giden soket: bind::connect_tcp / bind::bind_udp (IP_UNICAST_IF)
-//!                → seçilen fiziksel adaptör. Bu soketler TUN'a geri dönmez.
+//! app --> Wintun TUN (0.0.0.0/1 + 128.0.0.0/1 + 2000::/3) --> tun-reader thread
+//!                                                               |
+//!   TCP:  "system stack" NAT. Packets are rewritten in place and handed to a
+//!         local listener on Windows' own TCP stack; Windows terminates TCP.
+//!   UDP:  one session per app port.
+//!   IPv6: TCP is rejected with RST so apps fall back to IPv4.
+//!                                                               |
+//!   Policy::route(flow) -> which adapter? (service: socket -> PID -> exe -> rule)
+//!                                                               |
+//!   outbound socket: bind::connect_tcp / bind::bind_udp (IP_UNICAST_IF)
+//!                    -> chosen physical adapter. These sockets never loop back into the TUN.
 //! ```
 
 pub mod bind;

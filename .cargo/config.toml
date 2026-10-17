@@ -1,4 +1,4 @@
-# C çalışma zamanını exe'ye gömer: kullanıcının bilgisayarında
-# "VCRUNTIME140.dll bulunamadı" hatası çıkmaz.
+# Statically link the C runtime into the exe so users never hit
+# "VCRUNTIME140.dll was not found".
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

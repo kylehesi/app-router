@@ -1,4 +1,4 @@
-//! Router arka plan servisi ve tanılama komutları.
+//! Router background service and diagnostic commands.
 
 mod diag;
 mod ipc;
@@ -15,26 +15,25 @@ use router_engine::{Engine, EngineConfig, FULL_TUNNEL};
 use tokio::sync::watch;
 use tracing::{error, info};
 
-const HELP: &str = "\
-Router servisi
+const HELP: &str = "Router service
 
-Kullanım: router-service <komut>
+Usage: router-service <command>
 
-  run [--engine]  Konsolda çalıştır (geliştirme; Ctrl+C ile durur).
-                  --engine: yönlendirmeyi de başlat (tüm IPv4 trafiği; yönetici)
-  install         Windows servisi olarak kur ve başlat (yönetici)
-  uninstall       Servisi durdur ve kaldır (yönetici)
-  firewall        TUN için güvenlik duvarı kuralını ekle (yönetici)
+  run [--engine]  Run in the console (development; stop with Ctrl+C).
+                  --engine: also start routing (all traffic; administrator)
+  install         Install and start as a Windows service (administrator)
+  uninstall       Stop and remove the service (administrator)
+  firewall        Add the firewall rule for the TUN adapter (administrator)
 
-Tanılama:
-  adapters        Ağ adaptörlerini SSID'leriyle listele
-  apps            Ağ kullanan uygulamaları listele
-  probe <ad>      Belirtilen adaptör üzerinden dış IP'yi göster (örn. probe \"Wi-Fi 2\")
-  tun-test        Wintun adaptörünü oluşturup 10 sn paket dinle (yönetici)
-  engine-test [ad]
-                  Motoru yalnızca birkaç test adresi için çalıştırıp TCP ve UDP
-                  aktarmayı uçtan uca dener; diğer trafiğe dokunmaz (yönetici)
-  doctor          Sistemin hazır olup olmadığını kontrol et
+Diagnostics:
+  adapters        List network adapters with their SSIDs
+  apps            List applications using the network
+  probe <name>    Show the public IP via the given adapter (e.g. probe \"Wi-Fi 2\")
+  tun-test        Create the Wintun adapter and capture packets for 10 s (administrator)
+  engine-test [name]
+                  Run the engine for a few test addresses only and check TCP and
+                  UDP relaying end to end; other traffic is untouched (administrator)
+  doctor          Check whether the system is ready
 ";
 
 fn main() -> ExitCode {
@@ -59,24 +58,24 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Hata: {e:#}");
+            eprintln!("Error: {e:#}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Servisin asıl işi; hem konsol modunda hem Windows servisi olarak bunu çalıştırır.
+/// The service's actual work; both console mode and the Windows service run this.
 pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Result<()> {
     let rules = Arc::new(rules::RuleStore::load(rules::data_dir().join("rules.json"))?);
-    info!(count = rules.list().len(), "kurallar yüklendi");
+    info!(count = rules.list().len(), "rules loaded");
 
-    // Motor başlatılamazsa servis yine de ayakta kalır: arayüz durumu görebilir,
-    // kurallar düzenlenebilir.
+    // If the engine fails to start, the service stays up anyway: the UI can still
+    // see the status and rules can still be edited.
     let _engine = if with_engine {
         match start_engine(rules.clone()).await {
             Ok(engine) => Some(engine),
             Err(e) => {
-                error!("motor başlatılamadı: {e:#}");
+                error!("failed to start engine: {e:#}");
                 None
             }
         }
@@ -86,7 +85,7 @@ pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Res
 
     let state = Arc::new(ipc::State { rules });
     ipc::serve(state, shutdown).await
-    // `_engine` burada düşer: rotalar kaldırılır, trafik normale döner.
+    // `_engine` is dropped here: routes are removed and traffic goes back to normal.
 }
 
 async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<Engine> {
@@ -97,10 +96,10 @@ async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<Engine> {
     Ok(engine)
 }
 
-/// wintun.dll exe'nin yanında dağıtılır.
+/// wintun.dll ships next to the exe.
 pub fn wintun_path() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    Ok(exe.parent().context("exe klasörü bulunamadı")?.join("wintun.dll"))
+    Ok(exe.parent().context("could not determine the exe directory")?.join("wintun.dll"))
 }
 
 fn run_console(with_engine: bool) -> Result<()> {
@@ -113,16 +112,16 @@ fn run_console(with_engine: bool) -> Result<()> {
         let (tx, rx) = watch::channel(false);
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
-            info!("durduruluyor");
+            info!("stopping");
             let _ = tx.send(true);
         });
         run_core(rx, with_engine).await
     })
 }
 
-/// `wintun=off`: Wintun, adaptör henüz yokken "adaptör bulunamadı" diye hata
-/// günlüğü yazar; bu beklenen bir durumdur (adaptör hemen oluşturulur). Gerçek
-/// Wintun hataları zaten `Result` olarak bize döner.
+/// `wintun=off`: Wintun logs an "adapter not found" error when the adapter does
+/// not exist yet; that is expected (we create it right away). Real Wintun errors
+/// are returned to us as `Result` anyway.
 pub fn env_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,wintun=off"))

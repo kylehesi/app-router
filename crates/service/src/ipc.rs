@@ -1,4 +1,4 @@
-//! Arayüzün servisle konuştuğu named pipe sunucusu (satır başına bir JSON mesajı).
+//! Named pipe server the UI uses to talk to the service (one JSON message per line).
 
 use std::ffi::c_void;
 use std::io;
@@ -19,11 +19,11 @@ use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use crate::rules::RuleStore;
 
-/// SYSTEM ve Yöneticiler: tam erişim. Oturum açmış (etkileşimli) kullanıcılar: okuma/yazma.
-/// Servis SYSTEM olarak çalışırken normal kullanıcının arayüzü de bağlanabilir.
+/// SYSTEM and Administrators: full access. Signed-in (interactive) users: read/write.
+/// Lets a normal user's UI connect while the service runs as SYSTEM.
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
 
-/// Bir istek satırı için üst sınır; bozuk bir istemci servisin belleğini dolduramaz.
+/// Upper bound for one request line, so a broken client cannot exhaust the service's memory.
 const MAX_LINE: usize = 64 * 1024;
 
 pub struct State {
@@ -31,9 +31,9 @@ pub struct State {
 }
 
 pub async fn serve(state: Arc<State>, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-    // first_pipe_instance: aynı adlı pipe'ı başka bir süreç önceden açtıysa başarısız ol.
+    // first_pipe_instance: fail if another process already created a pipe with this name.
     let mut server = create_pipe(true)?;
-    info!(pipe = PIPE_NAME, "IPC dinleniyor");
+    info!(pipe = PIPE_NAME, "IPC listening");
     loop {
         tokio::select! {
             res = server.connect() => res?,
@@ -43,7 +43,7 @@ pub async fn serve(state: Arc<State>, mut shutdown: watch::Receiver<bool>) -> Re
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_client(client, &state).await {
-                debug!("istemci bağlantısı kapandı: {e}");
+                debug!("client connection closed: {e}");
             }
         });
     }
@@ -60,12 +60,12 @@ async fn handle_client(pipe: NamedPipeServer, state: &State) -> io::Result<()> {
             return Ok(());
         }
         if n > MAX_LINE {
-            // Satırın geri kalanı okunmadı; bağlantıyı kapatmak tek güvenli seçenek.
-            return send(&mut writer, &Response::Error("istek çok büyük".into())).await;
+            // The rest of the line was not read; closing the connection is the only safe option.
+            return send(&mut writer, &Response::Error("request too large".into())).await;
         }
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => dispatch(req, state).await,
-            Err(e) => Response::Error(format!("geçersiz istek: {e}")),
+            Err(e) => Response::Error(format!("invalid request: {e}")),
         };
         send(&mut writer, &response).await?;
     }
@@ -85,7 +85,7 @@ async fn dispatch(req: Request, state: &State) -> Response {
         Request::ListApps => blocking(router_sys::processes::network_apps, Response::Apps).await,
         Request::GetRules => Response::Rules(state.rules.list()),
         Request::SetRule { exe, adapter_guid } => {
-            info!(%exe, ?adapter_guid, "kural güncelleniyor");
+            info!(%exe, ?adapter_guid, "updating rule");
             match state.rules.set(&exe, adapter_guid) {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Error(format!("{e:#}")),
@@ -94,7 +94,7 @@ async fn dispatch(req: Request, state: &State) -> Response {
     }
 }
 
-/// Engelleyen Windows API çağrılarını tokio iş parçacıklarını tıkamadan çalıştırır.
+/// Runs blocking Windows API calls without stalling the tokio worker threads.
 async fn blocking<T: Send + 'static>(
     f: fn() -> io::Result<T>,
     wrap: fn(T) -> Response,
@@ -102,7 +102,7 @@ async fn blocking<T: Send + 'static>(
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(v)) => wrap(v),
         Ok(Err(e)) => Response::Error(e.to_string()),
-        Err(e) => Response::Error(format!("iç hata: {e}")),
+        Err(e) => Response::Error(format!("internal error: {e}")),
     }
 }
 

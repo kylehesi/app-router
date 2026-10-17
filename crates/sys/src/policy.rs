@@ -1,7 +1,7 @@
-//! "Eşzamanlı bağlantıları en aza indir" politikası.
+//! The "Minimize simultaneous connections" policy.
 //!
-//! Windows varsayılan olarak, internete zaten bağlıyken ikinci bir bağlantıyı
-//! kendiliğinden düşürebilir. Uygulamanın çalışması için bu davranış kapatılmalıdır:
+//! By default Windows may drop a second connection on its own while already
+//! connected to the internet. This behavior must be turned off for the app to work:
 //! `HKLM\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy\fMinimizeConnections = 0`
 
 use std::ffi::c_void;
@@ -19,7 +19,7 @@ use crate::util::{to_wide, win32_err};
 const KEY: &str = r"SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy";
 const VALUE: &str = "fMinimizeConnections";
 
-/// Politikanın mevcut değeri. `None`: hiç ayarlanmamış (Windows varsayılanı = 1, yani açık).
+/// Current value of the policy. `None`: never set (Windows default = 1, i.e. enabled).
 pub fn minimize_connections() -> Option<u32> {
     let key = to_wide(KEY);
     let name = to_wide(VALUE);
@@ -39,7 +39,7 @@ pub fn minimize_connections() -> Option<u32> {
     (ret == ERROR_SUCCESS).then_some(data)
 }
 
-/// Birden fazla bağlantının aynı anda açık kalmasına izin verir. Yönetici yetkisi gerekir.
+/// Allows multiple connections to stay up at the same time. Requires administrator rights.
 pub fn allow_simultaneous_connections() -> io::Result<()> {
     let key = to_wide(KEY);
     let name = to_wide(VALUE);

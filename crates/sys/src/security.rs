@@ -5,7 +5,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-/// Süreç yönetici yetkisiyle (UAC onaylı) mı çalışıyor?
+/// Is the process running with administrator rights (UAC elevated)?
 pub fn is_elevated() -> bool {
     let mut token: HANDLE = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {

@@ -3,14 +3,15 @@ use windows_sys::Win32::System::Console::{
     STD_OUTPUT_HANDLE,
 };
 
-/// Konsolda ANSI renk kodlarını açar. Eski konsollarda (Windows PowerShell 5.1)
-/// kapalı gelir; açılamazsa `false` döner ve çağıran renksiz çıktı vermelidir.
+/// Enables ANSI color codes in the console. Older consoles (Windows PowerShell 5.1)
+/// have them off by default; returns `false` if they can't be enabled, in which
+/// case the caller should print without colors.
 pub fn enable_ansi() -> bool {
     unsafe {
         let out = GetStdHandle(STD_OUTPUT_HANDLE);
         let mut mode = 0;
         if GetConsoleMode(out, &mut mode) == 0 {
-            return false; // konsol değil (dosyaya/boruya yönlendirilmiş)
+            return false; // not a console (redirected to a file/pipe)
         }
         mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
             || SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0

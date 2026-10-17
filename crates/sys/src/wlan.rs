@@ -1,4 +1,4 @@
-//! Native Wi-Fi API: bağlı olunan ağın adı (SSID) ve sinyal kalitesi.
+//! Native Wi-Fi API: name (SSID) and signal quality of the connected network.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -18,8 +18,8 @@ pub struct WlanLink {
     pub signal_quality: u32,
 }
 
-/// Bağlı Wi-Fi arayüzleri: anahtar, adaptör GUID'inin büyük harfli hali ("{...}").
-/// WLAN servisi çalışmıyorsa (Wi-Fi kartı yoksa) boş döner.
+/// Connected Wi-Fi interfaces, keyed by the uppercase adapter GUID ("{...}").
+/// Empty if the WLAN service isn't running (no Wi-Fi card).
 pub fn current_connections() -> HashMap<String, WlanLink> {
     let mut map = HashMap::new();
     let mut version = 0u32;
@@ -80,7 +80,7 @@ fn query_connection(handle: HANDLE, guid: &GUID) -> Option<WlanLink> {
     Some(link)
 }
 
-/// GetAdaptersAddresses'taki AdapterName biçimi: "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}".
+/// Same format as AdapterName from GetAdaptersAddresses: "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}".
 fn guid_to_string(g: &GUID) -> String {
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
