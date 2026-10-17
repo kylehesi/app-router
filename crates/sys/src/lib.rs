@@ -2,6 +2,8 @@
 //! yetki ve sistem politikası. `unsafe` kodun tamamı bu crate'te toplanır.
 
 pub mod adapters;
+pub mod firewall;
+pub mod netcfg;
 pub mod policy;
 pub mod processes;
 pub mod security;

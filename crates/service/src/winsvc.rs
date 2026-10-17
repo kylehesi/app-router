@@ -70,7 +70,7 @@ fn run_service() -> Result<()> {
 
     let result = tokio::runtime::Runtime::new()
         .context("tokio başlatılamadı")
-        .and_then(|rt| rt.block_on(crate::run_core(rx)));
+        .and_then(|rt| rt.block_on(crate::run_core(rx, true)));
 
     // Hata durumunda sıfır olmayan kod: SCM bunu çökme sayar ve kurtarma ayarına göre yeniden başlatır.
     let code = if result.is_ok() { 0 } else { 1 };
@@ -137,6 +137,9 @@ pub fn install() -> Result<()> {
         Ok(()) => println!("Eşzamanlı bağlantı politikası ayarlandı (fMinimizeConnections = 0)."),
         Err(e) => warn!("eşzamanlı bağlantı politikası ayarlanamadı: {e}"),
     }
+    router_sys::firewall::ensure_rule(router_engine::TUN_IP, router_engine::PEER_IP)
+        .context("güvenlik duvarı kuralı eklenemedi")?;
+    println!("Güvenlik duvarı kuralı eklendi ('{}').", router_sys::firewall::RULE_NAME);
 
     service.start::<&str>(&[]).context("servis başlatılamadı")?;
     println!("'{SERVICE_NAME}' kuruldu ve başlatıldı.");
@@ -163,6 +166,9 @@ pub fn uninstall() -> Result<()> {
         }
     }
     service.delete()?;
+    if router_sys::firewall::rule_exists() {
+        router_sys::firewall::remove_rule()?;
+    }
     println!("'{SERVICE_NAME}' kaldırıldı.");
     Ok(())
 }

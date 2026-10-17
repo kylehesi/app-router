@@ -5,7 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+router-sys.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 windows-sys.workspace = true
 wintun.workspace = true

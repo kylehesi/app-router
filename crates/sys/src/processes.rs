@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 
 use router_common::{normalize_exe, AppInfo};
 use windows_sys::Win32::Foundation::{
@@ -89,59 +89,104 @@ pub fn process_path(pid: u32) -> Option<String> {
 
 /// Sistemdeki tüm TCP ve UDP soketleri, sahibi olan PID ile birlikte.
 pub fn socket_table() -> io::Result<Vec<SocketEntry>> {
-    let mut out = Vec::new();
+    let mut out = tcp4_sockets()?;
+    out.extend(tcp6_sockets()?);
+    out.extend(udp4_sockets()?);
+    out.extend(udp6_sockets()?);
+    Ok(out)
+}
 
+/// `local → remote` IPv4 TCP bağlantısının sahibi olan süreç.
+pub fn tcp4_owner(local: SocketAddrV4, remote: SocketAddrV4) -> io::Result<Option<u32>> {
+    let (local, remote) = (SocketAddr::V4(local), Some(SocketAddr::V4(remote)));
+    Ok(tcp4_sockets()?
+        .into_iter()
+        .find(|s| s.local == local && s.remote == remote)
+        .map(|s| s.pid))
+}
+
+/// `local` adresindeki IPv4 UDP soketinin sahibi olan süreç. Soket 0.0.0.0'a
+/// bağlıysa yalnızca port eşleşir.
+pub fn udp4_owner(local: SocketAddrV4) -> io::Result<Option<u32>> {
+    let sockets = udp4_sockets()?;
+    let exact = SocketAddr::V4(local);
+    let any = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local.port()));
+    Ok(sockets
+        .iter()
+        .find(|s| s.local == exact)
+        .or_else(|| sockets.iter().find(|s| s.local == any))
+        .map(|s| s.pid))
+}
+
+/// Sürecin küçük harfli exe adı ("chrome.exe"); kural anahtarıyla aynı biçim.
+pub fn exe_name(pid: u32) -> Option<String> {
+    let path = process_path(pid)?;
+    let name = path.rsplit(['\\', '/']).next()?;
+    Some(normalize_exe(name))
+}
+
+fn tcp4_sockets() -> io::Result<Vec<SocketEntry>> {
     let buf = fetch_table(|p, s| unsafe {
         GetExtendedTcpTable(p, s, 0, AF_INET as u32, TCP_TABLE_OWNER_PID_ALL, 0)
     })?;
-    for r in unsafe { rows::<MIB_TCPTABLE_OWNER_PID, MIB_TCPROW_OWNER_PID>(&buf) } {
-        let listening = r.dwState == MIB_TCP_STATE_LISTEN;
-        out.push(SocketEntry {
+    let rows = unsafe { rows::<MIB_TCPTABLE_OWNER_PID, MIB_TCPROW_OWNER_PID>(&buf) };
+    Ok(rows
+        .iter()
+        .map(|r| SocketEntry {
             proto: Proto::Tcp,
             local: v4(r.dwLocalAddr, r.dwLocalPort),
-            remote: (!listening).then(|| v4(r.dwRemoteAddr, r.dwRemotePort)),
+            remote: (r.dwState != MIB_TCP_STATE_LISTEN).then(|| v4(r.dwRemoteAddr, r.dwRemotePort)),
             pid: r.dwOwningPid,
-        });
-    }
+        })
+        .collect())
+}
 
+fn tcp6_sockets() -> io::Result<Vec<SocketEntry>> {
     let buf = fetch_table(|p, s| unsafe {
         GetExtendedTcpTable(p, s, 0, AF_INET6 as u32, TCP_TABLE_OWNER_PID_ALL, 0)
     })?;
-    for r in unsafe { rows::<MIB_TCP6TABLE_OWNER_PID, MIB_TCP6ROW_OWNER_PID>(&buf) } {
-        let listening = r.dwState == MIB_TCP_STATE_LISTEN;
-        out.push(SocketEntry {
+    let rows = unsafe { rows::<MIB_TCP6TABLE_OWNER_PID, MIB_TCP6ROW_OWNER_PID>(&buf) };
+    Ok(rows
+        .iter()
+        .map(|r| SocketEntry {
             proto: Proto::Tcp,
             local: v6(r.ucLocalAddr, r.dwLocalPort),
-            remote: (!listening).then(|| v6(r.ucRemoteAddr, r.dwRemotePort)),
+            remote: (r.dwState != MIB_TCP_STATE_LISTEN).then(|| v6(r.ucRemoteAddr, r.dwRemotePort)),
             pid: r.dwOwningPid,
-        });
-    }
+        })
+        .collect())
+}
 
+fn udp4_sockets() -> io::Result<Vec<SocketEntry>> {
     let buf = fetch_table(|p, s| unsafe {
         GetExtendedUdpTable(p, s, 0, AF_INET as u32, UDP_TABLE_OWNER_PID, 0)
     })?;
-    for r in unsafe { rows::<MIB_UDPTABLE_OWNER_PID, MIB_UDPROW_OWNER_PID>(&buf) } {
-        out.push(SocketEntry {
+    let rows = unsafe { rows::<MIB_UDPTABLE_OWNER_PID, MIB_UDPROW_OWNER_PID>(&buf) };
+    Ok(rows
+        .iter()
+        .map(|r| SocketEntry {
             proto: Proto::Udp,
             local: v4(r.dwLocalAddr, r.dwLocalPort),
             remote: None,
             pid: r.dwOwningPid,
-        });
-    }
+        })
+        .collect())
+}
 
+fn udp6_sockets() -> io::Result<Vec<SocketEntry>> {
     let buf = fetch_table(|p, s| unsafe {
         GetExtendedUdpTable(p, s, 0, AF_INET6 as u32, UDP_TABLE_OWNER_PID, 0)
     })?;
-    for r in unsafe { rows::<MIB_UDP6TABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID>(&buf) } {
-        out.push(SocketEntry {
+    let rows = unsafe { rows::<MIB_UDP6TABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID>(&buf) };
+    Ok(rows
+        .iter()
+        .map(|r| SocketEntry {
             proto: Proto::Udp,
             local: v6(r.ucLocalAddr, r.dwLocalPort),
             remote: None,
             pid: r.dwOwningPid,
-        });
-    }
-
-    Ok(out)
+        })
+        .collect())
 }
 
 /// Soketi olan uygulamalar, exe adına göre gruplanmış ve sıralanmış.
