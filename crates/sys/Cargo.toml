@@ -1,0 +1,9 @@
+[package]
+name = "router-sys"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+router-common.workspace = true
+windows-sys.workspace = true

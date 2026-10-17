@@ -1,0 +1,146 @@
+import { Button, ComboBox, ListView, Palette } from "std-widgets.slint";
+
+export struct AdapterRow {
+    title: string,
+    subtitle: string,
+    connected: bool,
+    internet: bool,
+}
+
+export struct AppRow {
+    exe: string,
+    detail: string,
+    choice: int,
+    running: bool,
+}
+
+component StatusDot inherits Rectangle {
+    in property <color> dot-color;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: dot-color;
+}
+
+export component MainWindow inherits Window {
+    title: "Router - Uygulama Bazlı İnternet";
+    preferred-width: 860px;
+    preferred-height: 640px;
+    min-width: 560px;
+    min-height: 420px;
+
+    in property <bool> service-online;
+    in property <string> status-text;
+    in property <[AdapterRow]> adapters;
+    in property <[string]> choices;
+    in property <[AppRow]> apps;
+
+    callback assign(string, int);
+    callback refresh();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: "Router";
+                font-size: 22px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            StatusDot {
+                y: (parent.height - self.height) / 2;
+                dot-color: root.service-online ? #2e9d50 : #d13438;
+            }
+            Text {
+                text: root.status-text;
+                vertical-alignment: center;
+            }
+            Button {
+                text: "Yenile";
+                clicked => { root.refresh(); }
+            }
+        }
+
+        Text {
+            text: "İnternet bağlantıları";
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+            for adapter in root.adapters: Rectangle {
+                background: Palette.alternate-background;
+                border-radius: 6px;
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 10px;
+                    StatusDot {
+                        y: (parent.height - self.height) / 2;
+                        dot-color: adapter.internet ? #2e9d50 : adapter.connected ? #c19c00 : #8a8886;
+                    }
+                    VerticalLayout {
+                        Text {
+                            text: adapter.title;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: adapter.subtitle;
+                            font-size: 12px;
+                            opacity: 0.7;
+                        }
+                    }
+                }
+            }
+            if root.adapters.length == 0: Text {
+                text: root.service-online ? "Adaptör bulunamadı." : "Servise bağlanılamıyor.";
+                opacity: 0.7;
+            }
+        }
+
+        Text {
+            text: "Uygulamalar";
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for app in root.apps: HorizontalLayout {
+                padding: 6px;
+                padding-right: 18px; // kaydırma çubuğu için boşluk
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: app.exe;
+                        font-weight: 600;
+                        opacity: app.running ? 1.0 : 0.6;
+                    }
+                    Text {
+                        text: app.detail;
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
+                }
+                ComboBox {
+                    width: 300px;
+                    model: root.choices;
+                    current-index <=> app.choice;
+                    selected => { root.assign(app.exe, self.current-index); }
+                }
+            }
+        }
+
+        Text {
+            text: "Değişiklikler, uygulamanın bundan sonra açacağı bağlantılara uygulanır.";
+            font-size: 12px;
+            opacity: 0.7;
+        }
+    }
+}
