@@ -42,6 +42,12 @@ pub fn pseudo_v4(src: [u8; 4], dst: [u8; 4], protocol: u8, len: u16) -> u32 {
     acc + u32::from(protocol) + u32::from(len)
 }
 
+/// TCP/UDP için IPv6 sözde başlığının toplamı (RFC 8200 bölüm 8.1).
+pub fn pseudo_v6(src: [u8; 16], dst: [u8; 16], next_header: u8, len: u32) -> u32 {
+    let acc = add(add(0, &src), &dst);
+    acc + (len >> 16) + (len & 0xffff) + u32::from(next_header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

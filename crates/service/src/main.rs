@@ -106,6 +106,7 @@ pub fn wintun_path() -> Result<PathBuf> {
 fn run_console(with_engine: bool) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter())
+        .with_ansi(router_sys::console::enable_ansi())
         .init();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -119,7 +120,10 @@ fn run_console(with_engine: bool) -> Result<()> {
     })
 }
 
+/// `wintun=off`: Wintun, adaptör henüz yokken "adaptör bulunamadı" diye hata
+/// günlüğü yazar; bu beklenen bir durumdur (adaptör hemen oluşturulur). Gerçek
+/// Wintun hataları zaten `Result` olarak bize döner.
 pub fn env_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,wintun=off"))
 }

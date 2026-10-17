@@ -22,4 +22,6 @@ mod stack;
 pub mod tun;
 
 pub use policy::{Flow, Policy, Proto, Route};
-pub use stack::{Engine, EngineConfig, FULL_TUNNEL, PEER_IP, TUN_IP, TUN_MTU, TUN_PREFIX_LEN};
+pub use stack::{
+    Engine, EngineConfig, FULL_TUNNEL, PEER_IP, TUN_IP, TUN_IP6, TUN_MTU, TUN_PREFIX_LEN,
+};

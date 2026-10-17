@@ -57,7 +57,7 @@ impl RulePolicy {
 
     fn usable(&self, a: &AdapterInfo) -> bool {
         a.connected
-            && a.has_internet_route()
+            && a.ipv4_gateway().is_some()
             && !a.ipv4.is_empty()
             && a.if_index != self.tun_if_index.load(Ordering::Relaxed)
     }

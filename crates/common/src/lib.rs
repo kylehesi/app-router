@@ -54,6 +54,14 @@ impl AdapterInfo {
         !self.gateways.is_empty()
     }
 
+    /// İlk IPv4 ağ geçidi. Yönlendirme motoru şimdilik yalnızca IPv4 taşır.
+    pub fn ipv4_gateway(&self) -> Option<&str> {
+        self.gateways
+            .iter()
+            .map(String::as_str)
+            .find(|g| g.parse::<std::net::Ipv4Addr>().is_ok())
+    }
+
     /// Kullanıcıya gösterilecek ad: "Wi-Fi 2 · TurkTelekom_5G".
     pub fn display_name(&self) -> String {
         match &self.ssid {

@@ -140,6 +140,61 @@ pub fn write_v4_udp(out: &mut [u8], id: u16, src: SocketAddrV4, dst: SocketAddrV
     udp[6..8].copy_from_slice(&udp_check.to_be_bytes());
 }
 
+pub const IPV6_HEADER_LEN: usize = 40;
+/// [`v6_tcp_rst`] çıktısının uzunluğu: IPv6 başlığı + seçeneksiz TCP başlığı.
+pub const V6_RST_LEN: usize = IPV6_HEADER_LEN + 20;
+
+/// Gelen bir IPv6 TCP paketine, bağlantıyı hemen reddeden RST cevabını üretir
+/// (RFC 9293 bölüm 3.10.7.1). Uygulama beklemeden IPv4'e geçer.
+/// Paket RST ise, TCP değilse veya uzantı başlığı varsa `None` döner.
+pub fn v6_tcp_rst(p: &[u8]) -> Option<[u8; V6_RST_LEN]> {
+    if p.len() < IPV6_HEADER_LEN + 20 || p[0] >> 4 != 6 || p[6] != PROTO_TCP {
+        return None;
+    }
+    let t = &p[IPV6_HEADER_LEN..];
+    let flags = t[13];
+    if flags & TCP_RST != 0 {
+        return None; // RST'ye RST ile cevap verilmez
+    }
+    let payload_len = usize::from(u16::from_be_bytes([p[4], p[5]]));
+    let data_offset = usize::from(t[12] >> 4) * 4;
+    let segment_len = payload_len.saturating_sub(data_offset) as u32
+        + u32::from(flags & TCP_SYN != 0)
+        + u32::from(flags & TCP_FIN != 0);
+    let their_seq = u32::from_be_bytes([t[4], t[5], t[6], t[7]]);
+    let their_ack = u32::from_be_bytes([t[8], t[9], t[10], t[11]]);
+
+    // ACK'li pakete: seq = onların ack'i. ACK'siz pakete (ör. SYN): seq 0, ack = seq + uzunluk.
+    let (seq, ack, rst_flags) = if flags & TCP_ACK != 0 {
+        (their_ack, 0, TCP_RST)
+    } else {
+        (0, their_seq.wrapping_add(segment_len), TCP_RST | TCP_ACK)
+    };
+
+    let mut out = [0u8; V6_RST_LEN];
+    out[0] = 0x60;
+    out[4..6].copy_from_slice(&20u16.to_be_bytes());
+    out[6] = PROTO_TCP;
+    out[7] = 64;
+    out[8..24].copy_from_slice(&p[24..40]); // kaynak = onların hedefi
+    out[24..40].copy_from_slice(&p[8..24]); // hedef = onların kaynağı
+
+    let r = &mut out[IPV6_HEADER_LEN..];
+    r[0..2].copy_from_slice(&t[2..4]);
+    r[2..4].copy_from_slice(&t[0..2]);
+    r[4..8].copy_from_slice(&seq.to_be_bytes());
+    r[8..12].copy_from_slice(&ack.to_be_bytes());
+    r[12] = 0x50;
+    r[13] = rst_flags;
+
+    let src: [u8; 16] = out[8..24].try_into().unwrap();
+    let dst: [u8; 16] = out[24..40].try_into().unwrap();
+    let acc = checksum::pseudo_v6(src, dst, PROTO_TCP, 20);
+    let c = checksum::finish(checksum::add(acc, &out[IPV6_HEADER_LEN..]));
+    out[IPV6_HEADER_LEN + 16..IPV6_HEADER_LEN + 18].copy_from_slice(&c.to_be_bytes());
+    Some(out)
+}
+
 impl fmt::Display for PacketInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let proto = match self.protocol {
@@ -247,6 +302,52 @@ mod tests {
         let acc = checksum::pseudo_v4([1, 1, 1, 1], [198, 18, 0, 1], PROTO_UDP, 15);
         assert_eq!(checksum::finish(checksum::add(acc, &out[20..])), 0);
         assert_eq!(&out[28..], payload);
+    }
+
+    fn v6_syn() -> Vec<u8> {
+        let mut p = vec![0u8; 60];
+        p[0] = 0x60;
+        p[4..6].copy_from_slice(&20u16.to_be_bytes());
+        p[6] = PROTO_TCP;
+        p[7] = 64;
+        p[8..24].copy_from_slice(&"fd00::1".parse::<Ipv6Addr>().unwrap().octets());
+        p[24..40].copy_from_slice(&"2a00:1450::1".parse::<Ipv6Addr>().unwrap().octets());
+        p[40..42].copy_from_slice(&51000u16.to_be_bytes());
+        p[42..44].copy_from_slice(&443u16.to_be_bytes());
+        p[44..48].copy_from_slice(&1000u32.to_be_bytes());
+        p[52] = 0x50;
+        p[53] = TCP_SYN;
+        p
+    }
+
+    #[test]
+    fn v6_rst_answers_syn() {
+        let rst = v6_tcp_rst(&v6_syn()).unwrap();
+        assert_eq!(&rst[8..24], &v6_syn()[24..40], "kaynak/hedef yer değiştirmeli");
+        assert_eq!(u16::from_be_bytes([rst[40], rst[41]]), 443);
+        assert_eq!(u16::from_be_bytes([rst[42], rst[43]]), 51000);
+        assert_eq!(u32::from_be_bytes(rst[48..52].try_into().unwrap()), 1001, "ack = seq + SYN");
+        assert_eq!(rst[53], TCP_RST | TCP_ACK);
+        // Sözde başlık dahil toplam geçerliyse 0 çıkar.
+        let src: [u8; 16] = rst[8..24].try_into().unwrap();
+        let dst: [u8; 16] = rst[24..40].try_into().unwrap();
+        let acc = checksum::pseudo_v6(src, dst, PROTO_TCP, 20);
+        assert_eq!(checksum::finish(checksum::add(acc, &rst[40..])), 0);
+    }
+
+    #[test]
+    fn v6_rst_rules() {
+        let mut p = v6_syn();
+        p[53] = TCP_ACK;
+        p[48..52].copy_from_slice(&777u32.to_be_bytes());
+        let rst = v6_tcp_rst(&p).unwrap();
+        assert_eq!(u32::from_be_bytes(rst[44..48].try_into().unwrap()), 777, "seq = onların ack'i");
+        assert_eq!(rst[53], TCP_RST);
+
+        p[53] = TCP_RST;
+        assert!(v6_tcp_rst(&p).is_none(), "RST'ye cevap verilmez");
+        p[6] = PROTO_UDP;
+        assert!(v6_tcp_rst(&p).is_none());
     }
 
     #[test]

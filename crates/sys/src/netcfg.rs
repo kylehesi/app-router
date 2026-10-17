@@ -2,7 +2,7 @@
 //! Hepsi yönetici yetkisi gerektirir.
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, ERROR_OBJECT_ALREADY_EXISTS, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
@@ -12,27 +12,33 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
     MIB_IPFORWARD_ROW2, MIB_IPINTERFACE_ROW, MIB_UNICASTIPADDRESS_ROW,
 };
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
-use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+use windows_sys::Win32::Networking::WinSock::{
+    AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_INET,
+};
 
 use crate::util::win32_err;
 
 const IP_DAD_STATE_PREFERRED: i32 = 4;
 const MIB_IPPROTO_NETMGMT: i32 = 3;
 
-/// IPv4 ön eki, örn. 0.0.0.0/1.
+/// IP ön eki, örn. 0.0.0.0/1 veya 2000::/3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ipv4Prefix {
-    pub addr: Ipv4Addr,
+pub struct IpPrefix {
+    pub addr: IpAddr,
     pub len: u8,
 }
 
-impl Ipv4Prefix {
-    pub const fn new(addr: Ipv4Addr, len: u8) -> Self {
-        Self { addr, len }
+impl IpPrefix {
+    pub const fn v4(addr: Ipv4Addr, len: u8) -> Self {
+        Self { addr: IpAddr::V4(addr), len }
+    }
+
+    pub const fn v6(addr: Ipv6Addr, len: u8) -> Self {
+        Self { addr: IpAddr::V6(addr), len }
     }
 }
 
-impl std::fmt::Display for Ipv4Prefix {
+impl std::fmt::Display for IpPrefix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.addr, self.len)
     }
@@ -53,12 +59,26 @@ fn sockaddr_in(ip: Ipv4Addr) -> SOCKADDR_IN {
     s
 }
 
-/// Arayüze IPv4 adresi atar (zaten varsa dokunmaz). DAD beklenmez: adres hemen kullanılabilir.
-pub fn set_ipv4_address(if_index: u32, ip: Ipv4Addr, prefix_len: u8) -> io::Result<()> {
+fn sockaddr_inet(ip: IpAddr) -> SOCKADDR_INET {
+    let mut s: SOCKADDR_INET = unsafe { std::mem::zeroed() };
+    match ip {
+        IpAddr::V4(v4) => s.Ipv4 = sockaddr_in(v4),
+        IpAddr::V6(v6) => {
+            let mut s6: SOCKADDR_IN6 = unsafe { std::mem::zeroed() };
+            s6.sin6_family = AF_INET6;
+            s6.sin6_addr.u.Byte = v6.octets();
+            s.Ipv6 = s6;
+        }
+    }
+    s
+}
+
+/// Arayüze IP adresi atar (zaten varsa dokunmaz). DAD beklenmez: adres hemen kullanılabilir.
+pub fn set_address(if_index: u32, ip: IpAddr, prefix_len: u8) -> io::Result<()> {
     let mut row: MIB_UNICASTIPADDRESS_ROW = unsafe { std::mem::zeroed() };
     unsafe { InitializeUnicastIpAddressEntry(&mut row) };
     row.InterfaceLuid = luid_of(if_index)?;
-    row.Address.Ipv4 = sockaddr_in(ip);
+    row.Address = sockaddr_inet(ip);
     row.OnLinkPrefixLength = prefix_len;
     row.DadState = IP_DAD_STATE_PREFERRED;
     match unsafe { CreateUnicastIpAddressEntry(&row) } {
@@ -86,13 +106,17 @@ pub fn set_ipv4_mtu(if_index: u32, mtu: u32) -> io::Result<()> {
     }
 }
 
-fn route_row(luid: NET_LUID_LH, prefix: Ipv4Prefix) -> MIB_IPFORWARD_ROW2 {
+fn route_row(luid: NET_LUID_LH, prefix: IpPrefix) -> MIB_IPFORWARD_ROW2 {
     let mut row: MIB_IPFORWARD_ROW2 = unsafe { std::mem::zeroed() };
     unsafe { InitializeIpForwardEntry(&mut row) };
     row.InterfaceLuid = luid;
-    row.DestinationPrefix.Prefix.Ipv4 = sockaddr_in(prefix.addr);
+    row.DestinationPrefix.Prefix = sockaddr_inet(prefix.addr);
     row.DestinationPrefix.PrefixLength = prefix.len;
-    row.NextHop.Ipv4 = sockaddr_in(Ipv4Addr::UNSPECIFIED); // bağlantı üzerinde (on-link)
+    // Bağlantı üzerinde (on-link): sonraki atlama, ailenin "belirtilmemiş" adresi.
+    row.NextHop = sockaddr_inet(match prefix.addr {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    });
     row.Metric = 0;
     row.Protocol = MIB_IPPROTO_NETMGMT;
     row
@@ -101,18 +125,18 @@ fn route_row(luid: NET_LUID_LH, prefix: Ipv4Prefix) -> MIB_IPFORWARD_ROW2 {
 /// Eklenen rotaları tutar; düşürüldüğünde (drop) hepsini siler.
 pub struct RouteGuard {
     luid: NET_LUID_LH,
-    routes: Vec<Ipv4Prefix>,
+    routes: Vec<IpPrefix>,
 }
 
 impl RouteGuard {
-    pub fn routes(&self) -> &[Ipv4Prefix] {
+    pub fn routes(&self) -> &[IpPrefix] {
         &self.routes
     }
 }
 
 /// Ön ekleri bu arayüze yönlendiren rotaları ekler. Biri başarısız olursa
 /// o ana kadar eklenenler geri alınır.
-pub fn add_routes(if_index: u32, prefixes: &[Ipv4Prefix]) -> io::Result<RouteGuard> {
+pub fn add_routes(if_index: u32, prefixes: &[IpPrefix]) -> io::Result<RouteGuard> {
     let mut guard = RouteGuard { luid: luid_of(if_index)?, routes: Vec::new() };
     for &prefix in prefixes {
         let row = route_row(guard.luid, prefix);

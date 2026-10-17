@@ -1,7 +1,7 @@
 //! Veri yolu: TUN okuyucu, TCP NAT aktarma ve UDP oturumları.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use router_sys::netcfg::{self, Ipv4Prefix, RouteGuard};
+use router_sys::netcfg::{self, IpPrefix, RouteGuard};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, info, warn};
@@ -30,12 +30,26 @@ pub const TUN_PREFIX_LEN: u8 = 30;
 /// Bu paketler TUN'dan dışarı çıkmaz; dış bağlantılar adaptörün kendi MTU'sunu kullanır.
 pub const TUN_MTU: u32 = 9000;
 
-/// Tüm IPv4 trafiğini TUN'a alan iki rota. Varsayılan rotadan (0.0.0.0/0) daha
-/// özel oldukları için onu silmeden önce gelirler.
-pub const FULL_TUNNEL: [Ipv4Prefix; 2] = [
-    Ipv4Prefix::new(Ipv4Addr::new(0, 0, 0, 0), 1),
-    Ipv4Prefix::new(Ipv4Addr::new(128, 0, 0, 0), 1),
+/// TUN'un IPv6 adresi (ULA, RFC 4193). IPv6 trafiğinin TUN'dan çıkabilmesi için
+/// Windows'un bu arayüzde bir kaynak adresi bulması gerekir.
+pub const TUN_IP6: Ipv6Addr = Ipv6Addr::new(0xfd52, 0x6f75, 0x7465, 0, 0, 0, 0, 1);
+const TUN_IP6_PREFIX_LEN: u8 = 64;
+
+/// Tüm trafiği TUN'a alan rotalar. IPv4'teki iki /1 rotası, varsayılan rotadan
+/// (0.0.0.0/0) daha özel oldukları için onu silmeden önce gelir. IPv6'da internetin
+/// tamamı (2000::/3) TUN'a alınır ve reddedilir: uygulamalar IPv4'e geçer, böylece
+/// hiçbir bağlantı kuralları IPv6 üzerinden atlayamaz.
+pub const FULL_TUNNEL: [IpPrefix; 3] = [
+    IpPrefix::v4(Ipv4Addr::new(0, 0, 0, 0), 1),
+    IpPrefix::v4(Ipv4Addr::new(128, 0, 0, 0), 1),
+    IpPrefix::v6(Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0), 3),
 ];
+
+/// Hedef TUN'un kendi alt ağında mı (ağ/yayın adresi dahil)? Bunlar internete gitmez.
+fn in_tun_net(ip: &Ipv4Addr) -> bool {
+    let mask = u32::MAX << (32 - TUN_PREFIX_LEN);
+    u32::from(*ip) & mask == u32::from(TUN_IP) & mask
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_BUF: usize = 64 * 1024;
@@ -51,7 +65,7 @@ const UDP_SESSION_QUEUE: usize = 256;
 pub struct EngineConfig {
     pub wintun_dll: PathBuf,
     /// TUN'a yönlendirilecek ön ekler; normal kullanımda [`FULL_TUNNEL`].
-    pub routes: Vec<Ipv4Prefix>,
+    pub routes: Vec<IpPrefix>,
 }
 
 /// Çalışan motor. Düşürüldüğünde (drop) rotaları kaldırır ve TUN'u kapatır.
@@ -69,8 +83,10 @@ impl Engine {
     pub async fn start(config: EngineConfig, policy: Arc<dyn Policy>) -> Result<Self> {
         let tun = Tun::open(&config.wintun_dll)?;
         let if_index = tun.if_index()?;
-        netcfg::set_ipv4_address(if_index, TUN_IP, TUN_PREFIX_LEN)
+        netcfg::set_address(if_index, IpAddr::V4(TUN_IP), TUN_PREFIX_LEN)
             .context("TUN adresi atanamadı")?;
+        netcfg::set_address(if_index, IpAddr::V6(TUN_IP6), TUN_IP6_PREFIX_LEN)
+            .context("TUN IPv6 adresi atanamadı")?;
         if let Err(e) = netcfg::set_ipv4_mtu(if_index, TUN_MTU) {
             warn!("TUN MTU ayarlanamadı, varsayılan kullanılacak: {e}");
         }
@@ -161,7 +177,14 @@ impl Shared {
     fn reader_loop(&self) {
         while let Ok(pkt) = self.session.receive_blocking() {
             let data = pkt.bytes();
-            // Faz 2: yalnızca IPv4. IPv6 trafiği TUN'a yönlendirilmez.
+            if data.first().is_some_and(|b| b >> 4 == 6) {
+                // IPv6 henüz taşınmıyor: TCP'yi anında reddet (uygulama IPv4'e geçer),
+                // geri kalanı (UDP/QUIC) düşür; tarayıcılar TCP'ye döner.
+                if let Some(rst) = packet::v6_tcp_rst(data) {
+                    self.inject(rst.len(), |out| out.copy_from_slice(&rst));
+                }
+                continue;
+            }
             if data.len() < IPV4_HEADER_LEN || data[0] >> 4 != 4 || packet::is_v4_fragment(data) {
                 continue;
             }
@@ -189,7 +212,7 @@ impl Shared {
             // Dinleyiciden uygulamaya: uzak sunucudan geliyormuş gibi göster.
             let Some(entry) = self.nat.inbound(dst.port()) else { return };
             (entry.dst, SocketAddrV4::new(TUN_IP, entry.app_port))
-        } else if *src.ip() == TUN_IP {
+        } else if *src.ip() == TUN_IP && !in_tun_net(dst.ip()) {
             // Uygulamadan dışarı: yerel dinleyiciye çevir.
             let flags = data[ihl + 13];
             let syn = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
@@ -205,7 +228,11 @@ impl Shared {
     }
 
     fn handle_udp(&self, data: &[u8], ihl: usize, src: SocketAddrV4, dst: SocketAddrV4) {
-        if *src.ip() != TUN_IP || dst.ip().is_multicast() || dst.ip().is_broadcast() {
+        if *src.ip() != TUN_IP
+            || in_tun_net(dst.ip())
+            || dst.ip().is_multicast()
+            || dst.ip().is_broadcast()
+        {
             return;
         }
         if data.len() < ihl + UDP_HEADER_LEN {

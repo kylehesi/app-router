@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use router_common::{AdapterInfo, AdapterKind};
 use router_engine::{bind, packet, tun, Engine, EngineConfig};
-use router_sys::netcfg::Ipv4Prefix;
+use router_sys::netcfg::IpPrefix;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn adapters() -> Result<()> {
@@ -25,7 +25,7 @@ pub fn adapters() -> Result<()> {
             if a.connected { "Bağlı" } else { "Kapalı" },
             truncate(a.ssid.as_deref().unwrap_or("-"), 22),
             a.ipv4.first().map_or("-", String::as_str),
-            a.gateways.first().map_or("-", String::as_str),
+            a.ipv4_gateway().or(a.gateways.first().map(String::as_str)).unwrap_or("-"),
             a.ipv4_metric,
         );
         println!("        {}{}", a.description, if a.hardware { "" } else { "  [sanal]" });
@@ -130,8 +130,9 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "warn,router_engine=debug,router_service=debug",
+            "warn,wintun=off,router_engine=debug,router_service=debug",
         ))
+        .with_ansi(router_sys::console::enable_ansi())
         .init();
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -145,7 +146,16 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
             })
             .context("api.ipify.org çözülemedi")?;
         let dns = Ipv4Addr::new(1, 1, 1, 1);
-        let routes = vec![Ipv4Prefix::new(ipify, 32), Ipv4Prefix::new(dns, 32)];
+        // Yalnızca IPv6 adresi olan bir sunucu: bağlantı TUN'da reddedilmeli.
+        let ipv6 = tokio::net::lookup_host(("api6.ipify.org", 80)).await.ok().and_then(|mut it| {
+            it.find_map(|a| match a {
+                std::net::SocketAddr::V6(v6) => Some(*v6.ip()),
+                _ => None,
+            })
+        });
+        let mut routes = vec![IpPrefix::v4(ipify, 32), IpPrefix::v4(dns, 32)];
+        routes.extend(ipv6.map(|ip| IpPrefix::v6(ip, 128)));
+        let targets: Vec<String> = routes.iter().map(|r| r.addr.to_string()).collect();
 
         let rules = Arc::new(crate::rules::RuleStore::load(
             crate::rules::data_dir().join("rules.json"),
@@ -153,7 +163,7 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
         let policy = Arc::new(crate::policy::RulePolicy::new(rules, force.map(|a| a.if_index)));
         let engine = Engine::start(EngineConfig { wintun_dll: dll, routes }, policy.clone()).await?;
         policy.set_tun_if_index(engine.if_index());
-        println!("Motor çalışıyor; yalnızca {ipify} ve {dns} TUN'a yönlendirildi.\n");
+        println!("Motor çalışıyor; yalnızca {} TUN'a yönlendirildi.\n", targets.join(", "));
 
         let tcp = tokio::time::timeout(Duration::from_secs(10), http_public_ip(ipify)).await;
         let tcp = tcp.unwrap_or_else(|_| Err(anyhow::anyhow!("zaman aşımı (10 sn)")));
@@ -169,8 +179,38 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
             Err(e) => println!("[ !! ] UDP: {e:#}"),
         }
 
+        let v6_ok = match ipv6 {
+            None => {
+                println!("[ -- ] IPv6: api6.ipify.org çözülemedi, test atlandı");
+                true
+            }
+            Some(ip) => {
+                let start = Instant::now();
+                let attempt = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::net::TcpStream::connect((ip, 80)),
+                )
+                .await;
+                let ms = start.elapsed().as_millis();
+                match attempt {
+                    Ok(Err(_)) => {
+                        println!("[ OK ] IPv6: bağlantı {ms} ms içinde reddedildi; uygulamalar IPv4'e geçer");
+                        true
+                    }
+                    Ok(Ok(_)) => {
+                        println!("[ !! ] IPv6: bağlantı kuruldu; IPv6 trafiği kuralları atlayabilir");
+                        false
+                    }
+                    Err(_) => {
+                        println!("[ !! ] IPv6: bağlantı reddedilmedi, 3 sn bekledi (uygulamalar yavaşlar)");
+                        false
+                    }
+                }
+            }
+        };
+
         drop(engine);
-        if tcp.is_err() || udp.is_err() {
+        if tcp.is_err() || udp.is_err() || !v6_ok {
             bail!("motor testi başarısız");
         }
         println!("\nMotor testi başarılı; rotalar kaldırıldı.");
