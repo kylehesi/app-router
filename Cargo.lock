@@ -3728,7 +3728,9 @@ name = "router-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "router-sys",
  "tokio",
+ "tracing",
  "windows-sys 0.59.0",
  "wintun",
 ]

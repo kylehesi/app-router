@@ -1,21 +1,25 @@
 //! Yönlendirme motoru.
 //!
-//! Hedef veri yolu (Faz 2'de tamamlanacak):
-//!
 //! ```text
-//! uygulama ──► Wintun TUN (varsayılan rota) ──► paket okuyucu
-//!                                                  │
-//!     TCP: "system stack" NAT — paket TUN adresindeki yerel dinleyiciye
-//!          yönlendirilir, TCP'yi Windows'un kendi yığını sonlandırır
-//!          (pencereleme, tıkanıklık kontrolü vb. Windows'ta kalır).
-//!     UDP: oturum tablosu üzerinden doğrudan aktarma.
-//!                                                  │
-//!     sahip süreç: router_sys::processes ile 5'li → PID → exe → kural
-//!                                                  │
-//!     giden soket: bind::connect_tcp / bind::bind_udp (IP_UNICAST_IF)
-//!                  → seçilen fiziksel adaptör. Bu soketler TUN'a geri dönmez.
+//! uygulama ──► Wintun TUN (0.0.0.0/1 + 128.0.0.0/1) ──► tun-reader iş parçacığı
+//!                                                          │
+//!   TCP: "system stack" NAT. Paket yerinde yeniden yazılıp Windows'un kendi
+//!        TCP yığınındaki yerel dinleyiciye verilir; TCP'yi Windows sonlandırır.
+//!   UDP: uygulama portu başına bir oturum.
+//!                                                          │
+//!   Policy::route(flow) → hangi adaptör? (servis: soket → PID → exe → kural)
+//!                                                          │
+//!   giden soket: bind::connect_tcp / bind::bind_udp (IP_UNICAST_IF)
+//!                → seçilen fiziksel adaptör. Bu soketler TUN'a geri dönmez.
 //! ```
 
 pub mod bind;
+pub mod checksum;
+pub mod nat;
 pub mod packet;
+pub mod policy;
+mod stack;
 pub mod tun;
+
+pub use policy::{Flow, Policy, Proto, Route};
+pub use stack::{Engine, EngineConfig, FULL_TUNNEL, PEER_IP, TUN_IP, TUN_MTU, TUN_PREFIX_LEN};

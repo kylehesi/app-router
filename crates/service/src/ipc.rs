@@ -27,7 +27,7 @@ const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
 const MAX_LINE: usize = 64 * 1024;
 
 pub struct State {
-    pub rules: RuleStore,
+    pub rules: Arc<RuleStore>,
 }
 
 pub async fn serve(state: Arc<State>, mut shutdown: watch::Receiver<bool>) -> Result<()> {

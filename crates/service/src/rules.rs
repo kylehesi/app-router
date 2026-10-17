@@ -35,6 +35,11 @@ impl RuleStore {
         self.rules.read().unwrap().values().cloned().collect()
     }
 
+    /// `exe` küçük harfli olmalıdır ([`normalize_exe`]).
+    pub fn get(&self, exe: &str) -> Option<Rule> {
+        self.rules.read().unwrap().get(exe).cloned()
+    }
+
     /// `adapter_guid: None` kuralı siler.
     pub fn set(&self, exe: &str, adapter_guid: Option<String>) -> Result<()> {
         let exe = normalize_exe(exe);
