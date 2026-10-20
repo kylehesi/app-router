@@ -39,7 +39,10 @@ application uses.
   windowing and congestion control; the service only relays bytes to the chosen adapter.
 - **UDP** gets one interface-bound socket per application port (full cone), so games, QUIC and
   STUN work.
-- For every new connection: socket -> PID -> exe -> rule -> adapter.
+- For every new connection: socket -> PID -> exe -> rule -> adapter. Socket table scans are
+  shared between concurrent lookups (a scan that started after a lookup began always contains
+  its socket), so a burst of 50 new connections costs a couple of scans instead of 50. Exe
+  names are cached per process instance (PID + start time, since Windows reuses PIDs).
 - Outbound sockets are pinned to their adapter with `IP_UNICAST_IF`, so they never loop back
   into the TUN.
 - The TUN MTU is 9000.

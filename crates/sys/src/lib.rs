@@ -6,6 +6,7 @@ pub mod console;
 pub mod firewall;
 pub mod netcfg;
 pub mod notify;
+pub mod owner;
 pub mod policy;
 pub mod processes;
 pub mod security;

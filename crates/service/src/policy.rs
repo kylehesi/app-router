@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use router_common::{AdapterInfo, Fallback};
 use router_engine::{Flow, Policy, Proto, Route};
+use router_sys::owner::OwnerResolver;
 use tracing::{debug, warn};
 
 use crate::rules::RuleStore;
@@ -21,6 +22,7 @@ pub struct RulePolicy {
     tun_if_index: AtomicU32,
     /// For testing: send every connection to this adapter, ignoring the rules.
     force: Option<u32>,
+    owners: OwnerResolver,
 }
 
 impl RulePolicy {
@@ -31,6 +33,7 @@ impl RulePolicy {
             force_refresh: AtomicBool::new(false),
             tun_if_index: AtomicU32::new(0),
             force,
+            owners: OwnerResolver::default(),
         }
     }
 
@@ -97,12 +100,11 @@ impl Policy for RulePolicy {
         if let Some(if_index) = self.force {
             return Route::Interface(if_index);
         }
-        let owner = match flow.proto {
-            Proto::Tcp => router_sys::processes::tcp4_owner(flow.app, flow.dst),
-            Proto::Udp => router_sys::processes::udp4_owner(flow.app),
+        let pid = match flow.proto {
+            Proto::Tcp => self.owners.tcp4(flow.app, flow.dst),
+            Proto::Udp => self.owners.udp4(flow.app),
         };
-        let pid = owner.ok().flatten();
-        let exe = pid.and_then(router_sys::processes::exe_name);
+        let exe = pid.and_then(|pid| self.owners.exe(pid));
         let adapters = self.adapters();
 
         let route = match exe.as_deref().and_then(|e| self.rules.get(e)) {

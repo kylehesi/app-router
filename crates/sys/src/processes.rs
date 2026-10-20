@@ -7,19 +7,21 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 
 use router_common::{normalize_exe, AppInfo};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR,
+    CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME, INVALID_HANDLE_VALUE, NO_ERROR,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
     MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID, MIB_UDP6TABLE_OWNER_PID,
-    MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
+    TCP_TABLE_OWNER_PID_CONNECTIONS, UDP_TABLE_OWNER_PID,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::util::{from_wide_buf, win32_err};
@@ -95,33 +97,59 @@ pub fn socket_table() -> io::Result<Vec<SocketEntry>> {
     Ok(out)
 }
 
-/// Process owning the IPv4 TCP connection `local -> remote`.
-pub fn tcp4_owner(local: SocketAddrV4, remote: SocketAddrV4) -> io::Result<Option<u32>> {
-    let (local, remote) = (SocketAddr::V4(local), Some(SocketAddr::V4(remote)));
-    Ok(tcp4_sockets()?
-        .into_iter()
-        .find(|s| s.local == local && s.remote == remote)
-        .map(|s| s.pid))
-}
-
-/// Process owning the IPv4 UDP socket at `local`. If the socket is bound to
-/// 0.0.0.0, only the port is matched.
-pub fn udp4_owner(local: SocketAddrV4) -> io::Result<Option<u32>> {
-    let sockets = udp4_sockets()?;
-    let exact = SocketAddr::V4(local);
-    let any = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local.port()));
-    Ok(sockets
-        .iter()
-        .find(|s| s.local == exact)
-        .or_else(|| sockets.iter().find(|s| s.local == any))
-        .map(|s| s.pid))
-}
-
 /// Lowercase exe name of the process ("chrome.exe"); same format as the rule key.
 pub fn exe_name(pid: u32) -> Option<String> {
     let path = process_path(pid)?;
     let name = path.rsplit(['\\', '/']).next()?;
     Some(normalize_exe(name))
+}
+
+/// IPv4 TCP connections only (no listening sockets): `(local, remote) -> pid`.
+/// Cheaper than the full table; used for per-connection owner lookups.
+pub(crate) fn tcp4_connection_owners() -> io::Result<HashMap<(SocketAddrV4, SocketAddrV4), u32>> {
+    let buf = fetch_table(|p, s| unsafe {
+        GetExtendedTcpTable(p, s, 0, AF_INET as u32, TCP_TABLE_OWNER_PID_CONNECTIONS, 0)
+    })?;
+    let rows = unsafe { rows::<MIB_TCPTABLE_OWNER_PID, MIB_TCPROW_OWNER_PID>(&buf) };
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            match (
+                v4(r.dwLocalAddr, r.dwLocalPort),
+                v4(r.dwRemoteAddr, r.dwRemotePort),
+            ) {
+                (SocketAddr::V4(local), SocketAddr::V4(remote)) => {
+                    Some(((local, remote), r.dwOwningPid))
+                }
+                _ => None,
+            }
+        })
+        .collect())
+}
+
+/// IPv4 UDP sockets: `local -> pid` (local may be 0.0.0.0:port).
+pub(crate) fn udp4_owners() -> io::Result<HashMap<SocketAddrV4, u32>> {
+    Ok(udp4_sockets()?
+        .into_iter()
+        .filter_map(|s| match s.local {
+            SocketAddr::V4(local) => Some((local, s.pid)),
+            SocketAddr::V6(_) => None,
+        })
+        .collect())
+}
+
+/// Process creation time (FILETIME ticks). Together with the PID it identifies a
+/// process uniquely, because Windows reuses PIDs of exited processes.
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let mut times: [FILETIME; 4] = unsafe { std::mem::zeroed() };
+    let [created, exited, kernel, user] = &mut times;
+    let ok = unsafe { GetProcessTimes(h, created, exited, kernel, user) };
+    unsafe { CloseHandle(h) };
+    (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
 fn tcp4_sockets() -> io::Result<Vec<SocketEntry>> {

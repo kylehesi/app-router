@@ -7,8 +7,8 @@ Effort: **S** about a day, **M** a few days, **L** a week or more.
 ## Round 1 (priority order)
 
 1. A2 — Instant failover when an adapter drops *(implemented; real unplug test pending)*
-2. E4 — GitHub Actions CI *(in progress)*
-3. A4 — Fast, exact socket -> process lookup
+2. E4 — GitHub Actions CI *(done)*
+3. A4 — Fast, exact socket -> process lookup *(done)*
 4. A3 — "Connected but no internet" detection
 5. A1 — Ping/tracert support
 6. C6 — Priority list
@@ -31,9 +31,12 @@ Effort: **S** about a day, **M** a few days, **L** a week or more.
 - [ ] **A3 — "Connected but no internet" detection** (M)
   Periodic health checks per adapter (captive portals, ISP outages); treat a failing adapter as
   unavailable.
-- [ ] **A4 — Fast, exact socket -> process lookup** (M-L)
-  Every new connection currently scans the whole TCP table, which costs milliseconds and can miss
-  very short-lived connections. Use ETW network events (no driver) plus a cache.
+- [x] **A4 — Fast, exact socket -> process lookup** (M-L)
+  Every new connection used to scan the whole TCP table (about 5 ms with ~2000 sockets).
+  Concurrent lookups now share scans and exe names are cached per process instance: 50
+  simultaneous lookups take ~20 ms instead of ~245 ms, exe lookup 2 us instead of ~40 us.
+  ETW was considered and rejected: its events are delivered in batches (up to about a second
+  late), too late for a decision that has to be made when the connection opens.
 - [ ] **A5 — Child/helper processes inherit rules** (M)
   Apps such as Chrome, Discord and Steam do their networking in helper exes
   (e.g. `steamwebhelper.exe`). Inherit the parent's rule or support app groups.
@@ -118,7 +121,7 @@ Effort: **S** about a day, **M** a few days, **L** a week or more.
   driver signing; low-cost monthly options exist).
 - [ ] **E3 — Auto-update** (M)
   New versions from GitHub Releases.
-- [ ] **E4 — GitHub Actions CI** (S)
+- [x] **E4 — GitHub Actions CI** (S)
   Build, clippy and tests on every push; release binaries on tags.
 - [ ] **E5 — Choose a license** (S)
   The repo is public but has no license, which legally means "all rights reserved".
