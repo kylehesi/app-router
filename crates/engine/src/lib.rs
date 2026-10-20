@@ -16,6 +16,7 @@
 
 pub mod bind;
 pub mod checksum;
+pub mod flows;
 pub mod nat;
 pub mod packet;
 pub mod policy;

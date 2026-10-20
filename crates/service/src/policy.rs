@@ -1,6 +1,7 @@
 //! Answers the engine's per-connection question: socket -> PID -> exe -> rule -> adapter.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ const ADAPTER_CACHE_TTL: Duration = Duration::from_secs(3);
 pub struct RulePolicy {
     rules: Arc<RuleStore>,
     adapters: Mutex<Option<(Instant, Arc<Vec<AdapterInfo>>)>>,
+    force_refresh: AtomicBool,
     tun_if_index: AtomicU32,
     /// For testing: send every connection to this adapter, ignoring the rules.
     force: Option<u32>,
@@ -26,6 +28,7 @@ impl RulePolicy {
         Self {
             rules,
             adapters: Mutex::new(None),
+            force_refresh: AtomicBool::new(false),
             tun_if_index: AtomicU32::new(0),
             force,
         }
@@ -36,10 +39,23 @@ impl RulePolicy {
         self.tun_if_index.store(if_index, Ordering::Relaxed);
     }
 
+    /// Drops the cached adapter list and reads a fresh one (after a network change).
+    pub fn refresh(&self) -> Arc<Vec<AdapterInfo>> {
+        // The stale list is kept so a failed refresh can still fall back to it.
+        self.force_refresh.store(true, Ordering::Relaxed);
+        self.adapters()
+    }
+
+    /// Interfaces that can carry traffic right now.
+    pub fn usable_interfaces(&self, adapters: &[AdapterInfo]) -> BTreeSet<u32> {
+        adapters.iter().filter(|a| self.usable(a)).map(|a| a.if_index).collect()
+    }
+
     fn adapters(&self) -> Arc<Vec<AdapterInfo>> {
         let mut cache = self.adapters.lock().unwrap();
+        let forced = self.force_refresh.swap(false, Ordering::Relaxed);
         if let Some((at, list)) = cache.as_ref() {
-            if at.elapsed() < ADAPTER_CACHE_TTL {
+            if !forced && at.elapsed() < ADAPTER_CACHE_TTL {
                 return list.clone();
             }
         }

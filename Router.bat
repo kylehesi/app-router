@@ -38,6 +38,7 @@ echo   5. Show the public IP through an adapter
 echo   6. List apps using the network
 echo   7. System check (doctor)
 echo   8. Add the firewall rule
+echo   9. Watch adapter changes live
 echo   0. Exit
 echo.
 set "CHOICE="
@@ -51,6 +52,7 @@ if "%CHOICE%"=="5" goto probe
 if "%CHOICE%"=="6" goto apps
 if "%CHOICE%"=="7" goto doctor
 if "%CHOICE%"=="8" goto firewall
+if "%CHOICE%"=="9" goto watch
 if "%CHOICE%"=="0" exit /b 0
 goto menu
 
@@ -123,6 +125,14 @@ goto menu
 :firewall
 echo.
 "%SVC%" firewall
+echo.
+pause
+goto menu
+
+:watch
+echo.
+echo Press Ctrl+C to stop watching.
+"%SVC%" watch
 echo.
 pause
 goto menu

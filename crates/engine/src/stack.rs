@@ -15,6 +15,7 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, info, warn};
 
 use crate::bind;
+use crate::flows::FlowTable;
 use crate::nat::{NatEntry, TcpNat};
 use crate::packet::{self, IPV4_HEADER_LEN, PROTO_TCP, PROTO_UDP, TCP_ACK, TCP_SYN, UDP_HEADER_LEN};
 use crate::policy::{Flow, Policy, Proto, Route};
@@ -75,6 +76,7 @@ pub struct Engine {
     reader: Option<JoinHandle<()>>,
     tun: Tun,
     if_index: u32,
+    flows: Arc<FlowTable>,
 }
 
 impl Engine {
@@ -94,12 +96,14 @@ impl Engine {
         let listener = bind_listener().await?;
         let listener_port = listener.local_addr()?.port();
         let (udp_tx, udp_rx) = mpsc::channel(UDP_QUEUE);
+        let flows = Arc::new(FlowTable::default());
         let shared = Arc::new(Shared {
             session: tun.session(),
             nat: TcpNat::default(),
             listener_port,
             udp_tx,
             ip_id: AtomicU16::new(1),
+            flows: flows.clone(),
         });
 
         let reader = std::thread::Builder::new().name("tun-reader".into()).spawn({
@@ -112,7 +116,7 @@ impl Engine {
             tokio::spawn(nat_sweeper(shared)),
         ];
 
-        let mut engine = Self { routes: None, tasks, reader: Some(reader), tun, if_index };
+        let mut engine = Self { routes: None, tasks, reader: Some(reader), tun, if_index, flows };
         engine.routes = Some(netcfg::add_routes(if_index, &config.routes).context("failed to add routes")?);
         info!(if_index, %TUN_IP, listener_port, routes = ?config.routes, "engine started");
         Ok(engine)
@@ -121,6 +125,11 @@ impl Engine {
     /// Index of the TUN interface (to exclude it when picking the default adapter).
     pub fn if_index(&self) -> u32 {
         self.if_index
+    }
+
+    /// Active flows by outbound interface; used to tear them down when an adapter drops.
+    pub fn flows(&self) -> Arc<FlowTable> {
+        self.flows.clone()
     }
 }
 
@@ -169,6 +178,7 @@ struct Shared {
     listener_port: u16,
     udp_tx: mpsc::Sender<UdpDatagram>,
     ip_id: AtomicU16,
+    flows: Arc<FlowTable>,
 }
 
 impl Shared {
@@ -298,14 +308,19 @@ async fn tcp_accept_loop(shared: Arc<Shared>, policy: Arc<dyn Policy>, listener:
         let Some(entry) = shared.nat.activate(peer.port()) else { continue };
         let (shared, policy) = (shared.clone(), policy.clone());
         tokio::spawn(async move {
-            relay_tcp(&policy, stream, entry).await;
+            relay_tcp(&policy, &shared.flows, stream, entry).await;
             tokio::time::sleep(NAT_LINGER).await;
             shared.nat.remove(peer.port());
         });
     }
 }
 
-async fn relay_tcp(policy: &Arc<dyn Policy>, mut inbound: TcpStream, entry: NatEntry) {
+async fn relay_tcp(
+    policy: &Arc<dyn Policy>,
+    flows: &Arc<FlowTable>,
+    mut inbound: TcpStream,
+    entry: NatEntry,
+) {
     let flow = Flow {
         proto: Proto::Tcp,
         app: SocketAddrV4::new(TUN_IP, entry.app_port),
@@ -315,24 +330,47 @@ async fn relay_tcp(policy: &Arc<dyn Policy>, mut inbound: TcpStream, entry: NatE
         debug!(dst = %entry.dst, "TCP blocked");
         return;
     };
+    // Registered before connecting, so a dead adapter can't leave us waiting for the timeout.
+    let (_flow, mut kill) = flows.register(if_index, Proto::Tcp);
+
     let connect = tokio::time::timeout(CONNECT_TIMEOUT, bind::connect_tcp(entry.dst.into(), if_index));
-    let mut outbound = match connect.await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug!(dst = %entry.dst, if_index, "connect failed: {e}");
-            return;
-        }
-        Err(_) => {
-            debug!(dst = %entry.dst, if_index, "connect timeout");
-            return;
+    let connected = tokio::select! {
+        result = connect => match result {
+            Ok(Ok(s)) => Some(s),
+            Ok(Err(e)) => {
+                debug!(dst = %entry.dst, if_index, "connect failed: {e}");
+                None
+            }
+            Err(_) => {
+                debug!(dst = %entry.dst, if_index, "connect timeout");
+                None
+            }
+        },
+        _ = &mut kill => {
+            debug!(dst = %entry.dst, if_index, "adapter unavailable while connecting, TCP connection reset");
+            None
         }
     };
+    let Some(mut outbound) = connected else {
+        // RST rather than FIN: the app sees a failed connection and retries right away.
+        let _ = inbound.set_zero_linger();
+        return;
+    };
+
     let _ = inbound.set_nodelay(true);
-    match tokio::io::copy_bidirectional_with_sizes(&mut inbound, &mut outbound, RELAY_BUF, RELAY_BUF)
-        .await
-    {
-        Ok((up, down)) => debug!(dst = %entry.dst, if_index, up, down, "TCP closed"),
-        Err(e) => debug!(dst = %entry.dst, if_index, "TCP relay ended: {e}"),
+    let killed = tokio::select! {
+        result = tokio::io::copy_bidirectional_with_sizes(&mut inbound, &mut outbound, RELAY_BUF, RELAY_BUF) => {
+            match result {
+                Ok((up, down)) => debug!(dst = %entry.dst, if_index, up, down, "TCP closed"),
+                Err(e) => debug!(dst = %entry.dst, if_index, "TCP relay ended: {e}"),
+            }
+            false
+        }
+        _ = &mut kill => true,
+    };
+    if killed {
+        debug!(dst = %entry.dst, if_index, "adapter unavailable, TCP connection reset");
+        let _ = inbound.set_zero_linger();
     }
 }
 
@@ -374,9 +412,9 @@ async fn udp_session(
         app: SocketAddrV4::new(TUN_IP, app_port),
         dst: first.dst,
     };
-    let sock = match decide(&policy, flow).await {
+    let opened = match decide(&policy, flow).await {
         Route::Interface(if_index) => match bind::bind_udp(false, if_index).await {
-            Ok(sock) => Some(sock),
+            Ok(sock) => Some((sock, if_index)),
             Err(e) => {
                 debug!(app_port, if_index, "failed to open UDP socket: {e}");
                 None
@@ -384,25 +422,43 @@ async fn udp_session(
         },
         Route::Block => None,
     };
-    let Some(sock) = sock else {
+    let Some((sock, if_index)) = opened else {
         // Blocked session: swallow packets so we don't re-decide on every packet.
         while let Ok(Some(_)) = tokio::time::timeout(idle, rx.recv()).await {}
         return;
     };
+    // Ending the session is enough to fail over: the app's next datagram opens a
+    // new session with a fresh routing decision.
+    let (_flow, mut kill) = shared.flows.register(if_index, Proto::Udp);
 
-    let _ = sock.send_to(&first.payload, first.dst).await;
+    if let Err(e) = sock.send_to(&first.payload, first.dst).await {
+        debug!(app_port, if_index, "UDP send failed, ending session: {e}");
+        return;
+    }
     let mut buf = vec![0u8; 65_535];
     loop {
         tokio::select! {
             datagram = rx.recv() => match datagram {
-                Some(d) => { let _ = sock.send_to(&d.payload, d.dst).await; }
+                Some(d) => {
+                    // A send error means the adapter can't carry traffic any more (e.g. it
+                    // was unplugged). Without this, a chatty app would keep the dead session
+                    // alive forever, because every packet resets the idle timer.
+                    if let Err(e) = sock.send_to(&d.payload, d.dst).await {
+                        debug!(app_port, if_index, "UDP send failed, ending session: {e}");
+                        return;
+                    }
+                }
                 None => return,
             },
             received = sock.recv_from(&mut buf) => {
-                // Errors (e.g. ICMP "port unreachable" -> WSAECONNRESET) don't end the session.
+                // Receive errors (e.g. ICMP "port unreachable" -> WSAECONNRESET) don't end the session.
                 if let Ok((n, SocketAddr::V4(from))) = received {
                     shared.write_udp(from, app_port, &buf[..n]);
                 }
+            }
+            _ = &mut kill => {
+                debug!(app_port, if_index, "adapter unavailable, UDP session ended");
+                return;
             }
             _ = tokio::time::sleep(idle) => return,
         }

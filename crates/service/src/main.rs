@@ -2,6 +2,7 @@
 
 mod diag;
 mod ipc;
+mod monitor;
 mod policy;
 mod rules;
 mod winsvc;
@@ -33,6 +34,7 @@ Diagnostics:
   engine-test [name]
                   Run the engine for a few test addresses only and check TCP and
                   UDP relaying end to end; other traffic is untouched (administrator)
+  watch           Show adapters becoming available/unavailable live (Ctrl+C to stop)
   doctor          Check whether the system is ready
 ";
 
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
         Some("probe") => diag::probe(args.get(1).map(String::as_str)),
         Some("tun-test") => diag::tun_test(),
         Some("engine-test") => diag::engine_test(args.get(1).map(String::as_str)),
+        Some("watch") => diag::watch(),
         Some("doctor") => diag::doctor(),
         _ => {
             print!("{HELP}");
@@ -73,7 +76,10 @@ pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Res
     // see the status and rules can still be edited.
     let _engine = if with_engine {
         match start_engine(rules.clone()).await {
-            Ok(engine) => Some(engine),
+            Ok((engine, policy)) => {
+                tokio::spawn(monitor::run(policy, engine.flows(), shutdown.clone()));
+                Some(engine)
+            }
             Err(e) => {
                 error!("failed to start engine: {e:#}");
                 None
@@ -88,12 +94,12 @@ pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Res
     // `_engine` is dropped here: routes are removed and traffic goes back to normal.
 }
 
-async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<Engine> {
+async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<(Engine, Arc<policy::RulePolicy>)> {
     let policy = Arc::new(policy::RulePolicy::new(rules, None));
     let config = EngineConfig { wintun_dll: wintun_path()?, routes: FULL_TUNNEL.to_vec() };
     let engine = Engine::start(config, policy.clone()).await?;
     policy.set_tun_if_index(engine.if_index());
-    Ok(engine)
+    Ok((engine, policy))
 }
 
 /// wintun.dll ships next to the exe.

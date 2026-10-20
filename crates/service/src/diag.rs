@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use router_common::{AdapterInfo, AdapterKind};
-use router_engine::{bind, packet, tun, Engine, EngineConfig};
+use router_engine::flows::FlowTable;
+use router_engine::{bind, packet, tun, Engine, EngineConfig, Proto};
 use router_sys::netcfg::IpPrefix;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -209,13 +210,104 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
             }
         };
 
+        let failover = tokio::time::timeout(Duration::from_secs(10), failover_reset(ipify, engine.flows())).await;
+        let failover = failover.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out (10 s)")));
+        match &failover {
+            Ok(ms) => println!(
+                "[ OK ] Failover: open connection reset {ms} ms after its adapter was marked unavailable"
+            ),
+            Err(e) => println!("[ !! ] Failover: {e:#}"),
+        }
+
         drop(engine);
-        if tcp.is_err() || udp.is_err() || !v6_ok {
+        if tcp.is_err() || udp.is_err() || !v6_ok || failover.is_err() {
             bail!("engine test failed");
         }
         println!("\nEngine test passed; routes removed.");
         Ok(())
     })
+}
+
+/// Opens a connection through the TUN and makes sure data is flowing (a full HTTP
+/// round trip on a keep-alive connection), then does what the network monitor
+/// does when an adapter drops: resets every flow on that adapter. The app side
+/// must see a connection reset (RST) right away, not a hang or a clean close.
+async fn failover_reset(ip: Ipv4Addr, flows: Arc<FlowTable>) -> Result<u128> {
+    let mut stream = tokio::net::TcpStream::connect((ip, 80)).await.context("connect failed")?;
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: keep-alive\r\n\r\n")
+        .await?;
+    let mut response = [0u8; 4096];
+    let n = stream.read(&mut response).await.context("no response before the reset")?;
+    if !response[..n].starts_with(b"HTTP/1.1 200") {
+        bail!("unexpected response before the reset");
+    }
+    let if_index = flows
+        .active()
+        .into_iter()
+        .find(|(_, p)| *p == Proto::Tcp)
+        .map(|(if_index, _)| if_index)
+        .context("the relayed connection is not registered")?;
+    let start = Instant::now();
+    if flows.reset_interface(if_index) == 0 {
+        bail!("no connection was registered on interface {if_index}");
+    }
+    let mut buf = [0u8; 1];
+    match stream.read(&mut buf).await {
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {
+            Ok(start.elapsed().as_millis())
+        }
+        Ok(0) => bail!("connection was closed normally (FIN) instead of reset; apps may not retry"),
+        Ok(_) => bail!("connection is still open"),
+        Err(e) => bail!("unexpected error: {e}"),
+    }
+}
+
+/// Prints adapters becoming available/unavailable as it happens.
+pub fn watch() -> Result<()> {
+    let rules = Arc::new(crate::rules::RuleStore::load(crate::rules::data_dir().join("rules.json"))?);
+    let policy = crate::policy::RulePolicy::new(rules, None);
+    let snapshot = || {
+        let adapters = policy.refresh();
+        let usable = policy.usable_interfaces(&adapters);
+        adapters
+            .iter()
+            .filter(|a| a.hardware || a.has_internet_route())
+            .map(|a| (a.if_index, a.display_name(), usable.contains(&a.if_index)))
+            .collect::<Vec<_>>()
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _watcher = router_sys::notify::watch_changes(move || {
+        let _ = tx.send(());
+    })?;
+    let start = Instant::now();
+    let mut prev = snapshot();
+    println!("Watching network changes (Ctrl+C to stop). Usable adapters now:");
+    for (if_index, name, usable) in &prev {
+        println!("  {} {name} (index {if_index})", if *usable { "[ OK ]" } else { "[ -- ]" });
+    }
+    loop {
+        rx.recv()?;
+        std::thread::sleep(Duration::from_millis(500));
+        while rx.try_recv().is_ok() {}
+        let now = snapshot();
+        let secs = start.elapsed().as_secs_f32();
+        for (if_index, name, usable) in &now {
+            let before = prev.iter().find(|(i, _, _)| i == if_index).map(|(_, _, u)| *u);
+            match (before, *usable) {
+                (Some(false) | None, true) => println!("[{secs:7.1}s] + {name} is available (index {if_index})"),
+                (Some(true), false) => println!("[{secs:7.1}s] - {name} is unavailable (index {if_index})"),
+                _ => {}
+            }
+        }
+        for (if_index, name, usable) in &prev {
+            if *usable && !now.iter().any(|(i, _, _)| i == if_index) {
+                println!("[{secs:7.1}s] - {name} was removed (index {if_index})");
+            }
+        }
+        prev = now;
+    }
 }
 
 /// Uses a plain socket not bound to any adapter: it goes wherever the route table says.

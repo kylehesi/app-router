@@ -1,7 +1,24 @@
 # To-do
 
-All planned improvements. They are not ordered yet; they will be split into rounds later.
+All planned improvements. Items are taken one at a time in the priority order below; the rest
+will be ordered in later rounds.
 Effort: **S** about a day, **M** a few days, **L** a week or more.
+
+## Round 1 (priority order)
+
+1. A2 — Instant failover when an adapter drops *(implemented; real unplug test pending)*
+2. E4 — GitHub Actions CI
+3. A4 — Fast, exact socket -> process lookup
+4. A3 — "Connected but no internet" detection
+5. A1 — Ping/tracert support
+6. C6 — Priority list
+7. A10 — Kill switch
+8. C2 — Start/stop routing from the UI
+9. E6 — Logging and diagnostics
+10. D1 — Cleaner app list
+11. A5 — Child/helper processes inherit rules
+12. E1 — Installer (MSI)
+13. E5 — Choose a license
 
 ## A. Reliability
 

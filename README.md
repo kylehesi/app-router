@@ -41,6 +41,11 @@ application uses.
 - Outbound sockets are pinned to their adapter with `IP_UNICAST_IF`, so they never loop back
   into the TUN.
 - The TUN MTU is 9000.
+- **Failover:** the service listens for Windows network change notifications. When an adapter
+  stops being usable (unplugged, disconnected, lost its IPv4 gateway), every TCP connection on
+  it is reset with RST and every UDP session on it is closed. Apps reconnect right away and the
+  new connections follow the rule's fallback instead of hanging on a dead link. A UDP session
+  also ends as soon as sending through its adapter fails.
 - **IPv6 is not carried yet.** Internet IPv6 is still routed into the TUN and TCP attempts are
   rejected with RST, so applications fall back to IPv4 and rules cannot be bypassed over IPv6.
 - If the service stops or crashes, the routes and the TUN disappear and networking returns to
@@ -113,10 +118,12 @@ router-service probe "<adapter>"         # public IP through this adapter
 router-service doctor                    # is the system ready?
 router-service tun-test                  # does Wintun work? (administrator)
 router-service engine-test ["<adapter>"] # end-to-end engine test (administrator)
+router-service watch                     # show adapters becoming available/unavailable live
 ```
 
-`engine-test` routes only a few test addresses into the TUN and checks TCP, UDP/DNS and IPv6
-rejection end to end; all other traffic is left untouched.
+`engine-test` routes only a few test addresses into the TUN and checks TCP, UDP/DNS, IPv6
+rejection and failover (an open connection is reset when its adapter is marked unavailable)
+end to end; all other traffic is left untouched.
 
 ## Files
 
