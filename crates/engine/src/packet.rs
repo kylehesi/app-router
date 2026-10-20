@@ -39,7 +39,12 @@ pub fn parse(p: &[u8]) -> Option<PacketInfo> {
             }
             let src: [u8; 16] = p[8..24].try_into().ok()?;
             let dst: [u8; 16] = p[24..40].try_into().ok()?;
-            (p[6], IpAddr::V6(Ipv6Addr::from(src)), IpAddr::V6(Ipv6Addr::from(dst)), 40)
+            (
+                p[6],
+                IpAddr::V6(Ipv6Addr::from(src)),
+                IpAddr::V6(Ipv6Addr::from(dst)),
+                40,
+            )
         }
         _ => return None,
     };
@@ -206,9 +211,17 @@ impl fmt::Display for PacketInfo {
         };
         match (self.src_port, self.dst_port) {
             (Some(sp), Some(dp)) => {
-                write!(f, "{proto} {}:{sp} -> {}:{dp} ({} B)", self.src, self.dst, self.total_len)
+                write!(
+                    f,
+                    "{proto} {}:{sp} -> {}:{dp} ({} B)",
+                    self.src, self.dst, self.total_len
+                )
             }
-            _ => write!(f, "{proto} {} -> {} ({} B)", self.src, self.dst, self.total_len),
+            _ => write!(
+                f,
+                "{proto} {} -> {} ({} B)",
+                self.src, self.dst, self.total_len
+            ),
         }
     }
 }
@@ -276,7 +289,12 @@ mod tests {
     #[test]
     fn tcp_rewrite_keeps_checksums_valid() {
         let mut p = tcp_syn(addr("198.18.0.1:50000"), addr("142.250.187.14:443"));
-        rewrite_v4_tcp(&mut p, 20, addr("198.18.0.2:10000"), addr("198.18.0.1:61234"));
+        rewrite_v4_tcp(
+            &mut p,
+            20,
+            addr("198.18.0.2:10000"),
+            addr("198.18.0.1:61234"),
+        );
 
         let info = parse(&p).unwrap();
         assert_eq!(info.src, IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)));
@@ -293,7 +311,13 @@ mod tests {
     fn udp_builder_produces_valid_packet() {
         let payload = b"payload";
         let mut out = vec![0u8; IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
-        write_v4_udp(&mut out, 7, addr("1.1.1.1:53"), addr("198.18.0.1:5353"), payload);
+        write_v4_udp(
+            &mut out,
+            7,
+            addr("1.1.1.1:53"),
+            addr("198.18.0.1:5353"),
+            payload,
+        );
 
         let info = parse(&out).unwrap();
         assert_eq!(info.protocol, PROTO_UDP);
@@ -323,10 +347,18 @@ mod tests {
     #[test]
     fn v6_rst_answers_syn() {
         let rst = v6_tcp_rst(&v6_syn()).unwrap();
-        assert_eq!(&rst[8..24], &v6_syn()[24..40], "source/destination must be swapped");
+        assert_eq!(
+            &rst[8..24],
+            &v6_syn()[24..40],
+            "source/destination must be swapped"
+        );
         assert_eq!(u16::from_be_bytes([rst[40], rst[41]]), 443);
         assert_eq!(u16::from_be_bytes([rst[42], rst[43]]), 51000);
-        assert_eq!(u32::from_be_bytes(rst[48..52].try_into().unwrap()), 1001, "ack = seq + SYN");
+        assert_eq!(
+            u32::from_be_bytes(rst[48..52].try_into().unwrap()),
+            1001,
+            "ack = seq + SYN"
+        );
         assert_eq!(rst[53], TCP_RST | TCP_ACK);
         // The sum including the pseudo-header is 0 when valid.
         let src: [u8; 16] = rst[8..24].try_into().unwrap();
@@ -341,7 +373,11 @@ mod tests {
         p[53] = TCP_ACK;
         p[48..52].copy_from_slice(&777u32.to_be_bytes());
         let rst = v6_tcp_rst(&p).unwrap();
-        assert_eq!(u32::from_be_bytes(rst[44..48].try_into().unwrap()), 777, "seq = their ack");
+        assert_eq!(
+            u32::from_be_bytes(rst[44..48].try_into().unwrap()),
+            777,
+            "seq = their ack"
+        );
         assert_eq!(rst[53], TCP_RST);
 
         p[53] = TCP_RST;

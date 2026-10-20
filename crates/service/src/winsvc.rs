@@ -139,9 +139,14 @@ pub fn install() -> Result<()> {
     }
     router_sys::firewall::ensure_rule(router_engine::TUN_IP, router_engine::PEER_IP)
         .context("failed to add the firewall rule")?;
-    println!("Firewall rule added ('{}').", router_sys::firewall::RULE_NAME);
+    println!(
+        "Firewall rule added ('{}').",
+        router_sys::firewall::RULE_NAME
+    );
 
-    service.start::<&str>(&[]).context("failed to start the service")?;
+    service
+        .start::<&str>(&[])
+        .context("failed to start the service")?;
     println!("'{SERVICE_NAME}' installed and started.");
     Ok(())
 }

@@ -146,10 +146,20 @@ mod tests {
     #[test]
     fn syn_creates_entry_and_lookups_agree() {
         let nat = TcpNat::default();
-        assert_eq!(nat.outbound(50000, dst(), false), None, "a packet without SYN must not create an entry");
+        assert_eq!(
+            nat.outbound(50000, dst(), false),
+            None,
+            "a packet without SYN must not create an entry"
+        );
         let port = nat.outbound(50000, dst(), true).unwrap();
         assert_eq!(nat.outbound(50000, dst(), false), Some(port));
-        assert_eq!(nat.inbound(port), Some(NatEntry { app_port: 50000, dst: dst() }));
+        assert_eq!(
+            nat.inbound(port),
+            Some(NatEntry {
+                app_port: 50000,
+                dst: dst()
+            })
+        );
         assert_eq!(nat.activate(port).unwrap().app_port, 50000);
         nat.remove(port);
         assert!(nat.is_empty());
@@ -161,7 +171,9 @@ mod tests {
         let nat = TcpNat::default();
         let a = nat.outbound(50000, dst(), true).unwrap();
         let b = nat.outbound(50001, dst(), true).unwrap();
-        let c = nat.outbound(50000, "1.1.1.1:443".parse().unwrap(), true).unwrap();
+        let c = nat
+            .outbound(50000, "1.1.1.1:443".parse().unwrap(), true)
+            .unwrap();
         assert!(a != b && b != c && a != c);
     }
 

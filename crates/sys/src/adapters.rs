@@ -82,9 +82,9 @@ pub fn list_adapters() -> io::Result<Vec<AdapterInfo>> {
             friendly_name: unsafe { from_wide_ptr(a.FriendlyName) },
             description: unsafe { from_wide_ptr(a.Description) },
             kind: kind_of(a.IfType),
-            hardware: row
-                .as_ref()
-                .is_some_and(|r| r.InterfaceAndOperStatusFlags._bitfield & FLAG_HARDWARE_INTERFACE != 0),
+            hardware: row.as_ref().is_some_and(|r| {
+                r.InterfaceAndOperStatusFlags._bitfield & FLAG_HARDWARE_INTERFACE != 0
+            }),
             connected: a.OperStatus as i32 == IF_OPER_STATUS_UP,
             ssid: link.map(|l| l.ssid.clone()),
             signal_quality: link.map(|l| l.signal_quality),
@@ -125,7 +125,9 @@ fn adapter_addresses() -> io::Result<Vec<u64>> {
             e => return Err(win32_err(e)),
         }
     }
-    Err(io::Error::other("failed to get adapter list (buffer size kept changing)"))
+    Err(io::Error::other(
+        "failed to get adapter list (buffer size kept changing)",
+    ))
 }
 
 fn if_row(luid: u64) -> Option<MIB_IF_ROW2> {
@@ -156,7 +158,9 @@ unsafe fn sockaddr_to_ip(sa: &SOCKET_ADDRESS) -> Option<IpAddr> {
     match (*sa.lpSockaddr).sa_family {
         AF_INET => {
             let sin = &*(sa.lpSockaddr as *const SOCKADDR_IN);
-            Some(IpAddr::V4(Ipv4Addr::from(sin.sin_addr.S_un.S_addr.to_ne_bytes())))
+            Some(IpAddr::V4(Ipv4Addr::from(
+                sin.sin_addr.S_un.S_addr.to_ne_bytes(),
+            )))
         }
         AF_INET6 => {
             let sin6 = &*(sa.lpSockaddr as *const SOCKADDR_IN6);

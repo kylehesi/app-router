@@ -30,11 +30,17 @@ pub struct IpPrefix {
 
 impl IpPrefix {
     pub const fn v4(addr: Ipv4Addr, len: u8) -> Self {
-        Self { addr: IpAddr::V4(addr), len }
+        Self {
+            addr: IpAddr::V4(addr),
+            len,
+        }
     }
 
     pub const fn v6(addr: Ipv6Addr, len: u8) -> Self {
-        Self { addr: IpAddr::V6(addr), len }
+        Self {
+            addr: IpAddr::V6(addr),
+            len,
+        }
     }
 }
 
@@ -137,7 +143,10 @@ impl RouteGuard {
 /// Adds routes sending the prefixes to this interface. If one fails, the ones
 /// added so far are rolled back.
 pub fn add_routes(if_index: u32, prefixes: &[IpPrefix]) -> io::Result<RouteGuard> {
-    let mut guard = RouteGuard { luid: luid_of(if_index)?, routes: Vec::new() };
+    let mut guard = RouteGuard {
+        luid: luid_of(if_index)?,
+        routes: Vec::new(),
+    };
     for &prefix in prefixes {
         let row = route_row(guard.luid, prefix);
         match unsafe { CreateIpForwardEntry2(&row) } {
@@ -153,7 +162,10 @@ impl Drop for RouteGuard {
         for &prefix in &self.routes {
             let row = route_row(self.luid, prefix);
             let ret = unsafe { DeleteIpForwardEntry2(&row) };
-            debug_assert!(ret == NO_ERROR || ret == ERROR_NOT_FOUND, "failed to delete route: {ret}");
+            debug_assert!(
+                ret == NO_ERROR || ret == ERROR_NOT_FOUND,
+                "failed to delete route: {ret}"
+            );
         }
     }
 }

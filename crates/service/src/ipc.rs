@@ -55,7 +55,10 @@ async fn handle_client(pipe: NamedPipeServer, state: &State) -> io::Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
-        let n = (&mut reader).take(MAX_LINE as u64 + 1).read_line(&mut line).await?;
+        let n = (&mut reader)
+            .take(MAX_LINE as u64 + 1)
+            .read_line(&mut line)
+            .await?;
         if n == 0 {
             return Ok(());
         }
@@ -80,8 +83,12 @@ async fn send(writer: &mut (impl AsyncWriteExt + Unpin), response: &Response) ->
 
 async fn dispatch(req: Request, state: &State) -> Response {
     match req {
-        Request::Ping => Response::Pong { version: env!("CARGO_PKG_VERSION").into() },
-        Request::ListAdapters => blocking(router_sys::adapters::list_adapters, Response::Adapters).await,
+        Request::Ping => Response::Pong {
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+        Request::ListAdapters => {
+            blocking(router_sys::adapters::list_adapters, Response::Adapters).await
+        }
         Request::ListApps => blocking(router_sys::processes::network_apps, Response::Apps).await,
         Request::GetRules => Response::Rules(state.rules.list()),
         Request::SetRule { exe, adapter_guid } => {

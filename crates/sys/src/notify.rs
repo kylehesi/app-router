@@ -8,8 +8,8 @@ use std::ptr;
 use windows_sys::Win32::Foundation::{HANDLE, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     CancelMibChangeNotify2, NotifyIpInterfaceChange, NotifyRouteChange2,
-    NotifyUnicastIpAddressChange, MIB_IPFORWARD_ROW2, MIB_IPINTERFACE_ROW,
-    MIB_NOTIFICATION_TYPE, MIB_UNICASTIPADDRESS_ROW,
+    NotifyUnicastIpAddressChange, MIB_IPFORWARD_ROW2, MIB_IPINTERFACE_ROW, MIB_NOTIFICATION_TYPE,
+    MIB_UNICASTIPADDRESS_ROW,
 };
 use windows_sys::Win32::Networking::WinSock::AF_UNSPEC;
 
@@ -35,14 +35,19 @@ unsafe impl Sync for ChangeWatcher {}
 pub fn watch_changes(callback: impl Fn() + Send + Sync + 'static) -> io::Result<ChangeWatcher> {
     let callback: Box<Callback> = Box::new(Box::new(callback));
     let ctx = &*callback as *const Callback as *const c_void;
-    let mut watcher = ChangeWatcher { handles: Vec::with_capacity(3), _callback: callback };
+    let mut watcher = ChangeWatcher {
+        handles: Vec::with_capacity(3),
+        _callback: callback,
+    };
 
     let mut handle: HANDLE = ptr::null_mut();
     check(unsafe { NotifyIpInterfaceChange(AF_UNSPEC, Some(on_interface), ctx, 0, &mut handle) })?;
     watcher.handles.push(handle);
 
     let mut handle: HANDLE = ptr::null_mut();
-    check(unsafe { NotifyUnicastIpAddressChange(AF_UNSPEC, Some(on_address), ctx, 0, &mut handle) })?;
+    check(unsafe {
+        NotifyUnicastIpAddressChange(AF_UNSPEC, Some(on_address), ctx, 0, &mut handle)
+    })?;
     watcher.handles.push(handle);
 
     let mut handle: HANDLE = ptr::null_mut();
@@ -67,15 +72,27 @@ unsafe fn fire(ctx: *const c_void) {
     (*(ctx as *const Callback))();
 }
 
-unsafe extern "system" fn on_interface(ctx: *const c_void, _: *const MIB_IPINTERFACE_ROW, _: MIB_NOTIFICATION_TYPE) {
+unsafe extern "system" fn on_interface(
+    ctx: *const c_void,
+    _: *const MIB_IPINTERFACE_ROW,
+    _: MIB_NOTIFICATION_TYPE,
+) {
     fire(ctx);
 }
 
-unsafe extern "system" fn on_address(ctx: *const c_void, _: *const MIB_UNICASTIPADDRESS_ROW, _: MIB_NOTIFICATION_TYPE) {
+unsafe extern "system" fn on_address(
+    ctx: *const c_void,
+    _: *const MIB_UNICASTIPADDRESS_ROW,
+    _: MIB_NOTIFICATION_TYPE,
+) {
     fire(ctx);
 }
 
-unsafe extern "system" fn on_route(ctx: *const c_void, _: *const MIB_IPFORWARD_ROW2, _: MIB_NOTIFICATION_TYPE) {
+unsafe extern "system" fn on_route(
+    ctx: *const c_void,
+    _: *const MIB_IPFORWARD_ROW2,
+    _: MIB_NOTIFICATION_TYPE,
+) {
     fire(ctx);
 }
 

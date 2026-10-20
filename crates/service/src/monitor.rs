@@ -18,7 +18,11 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 /// Safety net in case a notification is missed.
 const RECHECK: Duration = Duration::from_secs(5);
 
-pub async fn run(policy: Arc<RulePolicy>, flows: Arc<FlowTable>, mut shutdown: watch::Receiver<bool>) {
+pub async fn run(
+    policy: Arc<RulePolicy>,
+    flows: Arc<FlowTable>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let changed = Arc::new(Notify::new());
     let _watcher = match router_sys::notify::watch_changes({
         let changed = changed.clone();
@@ -61,7 +65,10 @@ struct Snapshot {
 
 impl Snapshot {
     fn name(&self, if_index: u32) -> String {
-        self.names.get(&if_index).cloned().unwrap_or_else(|| format!("#{if_index}"))
+        self.names
+            .get(&if_index)
+            .cloned()
+            .unwrap_or_else(|| format!("#{if_index}"))
     }
 }
 
@@ -72,7 +79,10 @@ async fn snapshot(policy: &Arc<RulePolicy>) -> Option<Snapshot> {
         let adapters = policy.refresh();
         Snapshot {
             usable: policy.usable_interfaces(&adapters),
-            names: adapters.iter().map(|a| (a.if_index, a.display_name())).collect(),
+            names: adapters
+                .iter()
+                .map(|a| (a.if_index, a.display_name()))
+                .collect(),
         }
     })
     .await

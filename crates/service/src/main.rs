@@ -69,7 +69,9 @@ fn main() -> ExitCode {
 
 /// The service's actual work; both console mode and the Windows service run this.
 pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Result<()> {
-    let rules = Arc::new(rules::RuleStore::load(rules::data_dir().join("rules.json"))?);
+    let rules = Arc::new(rules::RuleStore::load(
+        rules::data_dir().join("rules.json"),
+    )?);
     info!(count = rules.list().len(), "rules loaded");
 
     // If the engine fails to start, the service stays up anyway: the UI can still
@@ -96,7 +98,10 @@ pub async fn run_core(shutdown: watch::Receiver<bool>, with_engine: bool) -> Res
 
 async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<(Engine, Arc<policy::RulePolicy>)> {
     let policy = Arc::new(policy::RulePolicy::new(rules, None));
-    let config = EngineConfig { wintun_dll: wintun_path()?, routes: FULL_TUNNEL.to_vec() };
+    let config = EngineConfig {
+        wintun_dll: wintun_path()?,
+        routes: FULL_TUNNEL.to_vec(),
+    };
     let engine = Engine::start(config, policy.clone()).await?;
     policy.set_tun_if_index(engine.if_index());
     Ok((engine, policy))
@@ -105,7 +110,10 @@ async fn start_engine(rules: Arc<rules::RuleStore>) -> Result<(Engine, Arc<polic
 /// wintun.dll ships next to the exe.
 pub fn wintun_path() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    Ok(exe.parent().context("could not determine the exe directory")?.join("wintun.dll"))
+    Ok(exe
+        .parent()
+        .context("could not determine the exe directory")?
+        .join("wintun.dll"))
 }
 
 fn run_console(with_engine: bool) -> Result<()> {

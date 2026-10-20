@@ -26,10 +26,16 @@ pub fn adapters() -> Result<()> {
             if a.connected { "Up" } else { "Down" },
             truncate(a.ssid.as_deref().unwrap_or("-"), 22),
             a.ipv4.first().map_or("-", String::as_str),
-            a.ipv4_gateway().or(a.gateways.first().map(String::as_str)).unwrap_or("-"),
+            a.ipv4_gateway()
+                .or(a.gateways.first().map(String::as_str))
+                .unwrap_or("-"),
             a.ipv4_metric,
         );
-        println!("        {}{}", a.description, if a.hardware { "" } else { "  [virtual]" });
+        println!(
+            "        {}{}",
+            a.description,
+            if a.hardware { "" } else { "  [virtual]" }
+        );
     }
     Ok(())
 }
@@ -56,8 +62,14 @@ pub fn probe(name: Option<&str>) -> Result<()> {
         bail!("adapter name required, e.g. router-service probe \"Wi-Fi\"");
     };
     let adapter = find_adapter(name)?;
-    println!("Trying via {} (index {})...", adapter.display_name(), adapter.if_index);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    println!(
+        "Trying via {} (index {})...",
+        adapter.display_name(),
+        adapter.if_index
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let ip = rt
         .block_on(bind::public_ipv4_via(adapter.if_index))
         .with_context(|| format!("could not reach the internet via {}", adapter.friendly_name))?;
@@ -70,7 +82,11 @@ pub fn tun_test() -> Result<()> {
         bail!("run as administrator");
     }
     let tun = tun::Tun::open(&crate::wintun_path()?)?;
-    println!("Opened '{}' (index {}). Capturing packets for 10 s...", tun::ADAPTER_NAME, tun.if_index()?);
+    println!(
+        "Opened '{}' (index {}). Capturing packets for 10 s...",
+        tun::ADAPTER_NAME,
+        tun.if_index()?
+    );
 
     let session = tun.session();
     let reader = std::thread::spawn(move || {
@@ -122,7 +138,9 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
         bail!("{} not found; run scripts\\fetch-wintun.ps1", dll.display());
     }
     if !router_sys::firewall::rule_exists() {
-        println!("Warning: firewall rule missing, the TCP test may fail ('router-service firewall').");
+        println!(
+            "Warning: firewall rule missing, the TCP test may fail ('router-service firewall')."
+        );
     }
     let force = adapter.map(find_adapter).transpose()?;
     if let Some(a) = &force {
@@ -233,12 +251,17 @@ pub fn engine_test(adapter: Option<&str>) -> Result<()> {
 /// does when an adapter drops: resets every flow on that adapter. The app side
 /// must see a connection reset (RST) right away, not a hang or a clean close.
 async fn failover_reset(ip: Ipv4Addr, flows: Arc<FlowTable>) -> Result<u128> {
-    let mut stream = tokio::net::TcpStream::connect((ip, 80)).await.context("connect failed")?;
+    let mut stream = tokio::net::TcpStream::connect((ip, 80))
+        .await
+        .context("connect failed")?;
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: keep-alive\r\n\r\n")
         .await?;
     let mut response = [0u8; 4096];
-    let n = stream.read(&mut response).await.context("no response before the reset")?;
+    let n = stream
+        .read(&mut response)
+        .await
+        .context("no response before the reset")?;
     if !response[..n].starts_with(b"HTTP/1.1 200") {
         bail!("unexpected response before the reset");
     }
@@ -254,7 +277,12 @@ async fn failover_reset(ip: Ipv4Addr, flows: Arc<FlowTable>) -> Result<u128> {
     }
     let mut buf = [0u8; 1];
     match stream.read(&mut buf).await {
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ) =>
+        {
             Ok(start.elapsed().as_millis())
         }
         Ok(0) => bail!("connection was closed normally (FIN) instead of reset; apps may not retry"),
@@ -265,7 +293,9 @@ async fn failover_reset(ip: Ipv4Addr, flows: Arc<FlowTable>) -> Result<u128> {
 
 /// Prints adapters becoming available/unavailable as it happens.
 pub fn watch() -> Result<()> {
-    let rules = Arc::new(crate::rules::RuleStore::load(crate::rules::data_dir().join("rules.json"))?);
+    let rules = Arc::new(crate::rules::RuleStore::load(
+        crate::rules::data_dir().join("rules.json"),
+    )?);
     let policy = crate::policy::RulePolicy::new(rules, None);
     let snapshot = || {
         let adapters = policy.refresh();
@@ -285,7 +315,10 @@ pub fn watch() -> Result<()> {
     let mut prev = snapshot();
     println!("Watching network changes (Ctrl+C to stop). Usable adapters now:");
     for (if_index, name, usable) in &prev {
-        println!("  {} {name} (index {if_index})", if *usable { "[ OK ]" } else { "[ -- ]" });
+        println!(
+            "  {} {name} (index {if_index})",
+            if *usable { "[ OK ]" } else { "[ -- ]" }
+        );
     }
     loop {
         rx.recv()?;
@@ -294,10 +327,17 @@ pub fn watch() -> Result<()> {
         let now = snapshot();
         let secs = start.elapsed().as_secs_f32();
         for (if_index, name, usable) in &now {
-            let before = prev.iter().find(|(i, _, _)| i == if_index).map(|(_, _, u)| *u);
+            let before = prev
+                .iter()
+                .find(|(i, _, _)| i == if_index)
+                .map(|(_, _, u)| *u);
             match (before, *usable) {
-                (Some(false) | None, true) => println!("[{secs:7.1}s] + {name} is available (index {if_index})"),
-                (Some(true), false) => println!("[{secs:7.1}s] - {name} is unavailable (index {if_index})"),
+                (Some(false) | None, true) => {
+                    println!("[{secs:7.1}s] + {name} is available (index {if_index})")
+                }
+                (Some(true), false) => {
+                    println!("[{secs:7.1}s] - {name} is unavailable (index {if_index})")
+                }
                 _ => {}
             }
         }
@@ -312,8 +352,11 @@ pub fn watch() -> Result<()> {
 
 /// Uses a plain socket not bound to any adapter: it goes wherever the route table says.
 async fn http_public_ip(ip: Ipv4Addr) -> Result<String> {
-    let mut s = tokio::net::TcpStream::connect((ip, 80)).await.context("connect failed")?;
-    s.write_all(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n").await?;
+    let mut s = tokio::net::TcpStream::connect((ip, 80))
+        .await
+        .context("connect failed")?;
+    s.write_all(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n")
+        .await?;
     let mut resp = Vec::new();
     s.read_to_end(&mut resp).await?;
     let resp = String::from_utf8_lossy(&resp);
@@ -357,8 +400,13 @@ async fn dns_lookup(server: Ipv4Addr, name: &str) -> Result<String> {
                 }
             }
         }
-        let Some(hdr) = resp.get(pos..pos + 10) else { break };
-        let (rtype, rdlen) = (u16::from_be_bytes([hdr[0], hdr[1]]), u16::from_be_bytes([hdr[8], hdr[9]]));
+        let Some(hdr) = resp.get(pos..pos + 10) else {
+            break;
+        };
+        let (rtype, rdlen) = (
+            u16::from_be_bytes([hdr[0], hdr[1]]),
+            u16::from_be_bytes([hdr[8], hdr[9]]),
+        );
         pos += 10;
         if rtype == 1 && rdlen == 4 {
             if let Some(r) = resp.get(pos..pos + 4) {
@@ -426,7 +474,14 @@ pub fn doctor() -> Result<()> {
     );
 
     println!();
-    println!("{}", if ok { "System is ready." } else { "Fix the issues above." });
+    println!(
+        "{}",
+        if ok {
+            "System is ready."
+        } else {
+            "Fix the issues above."
+        }
+    );
     Ok(())
 }
 
@@ -437,18 +492,34 @@ fn find_adapter(name: &str) -> Result<AdapterInfo> {
         .find(|a| {
             a.friendly_name.to_lowercase() == wanted
                 || a.if_index.to_string() == wanted
-                || a.ssid.as_deref().is_some_and(|s| s.to_lowercase() == wanted)
+                || a.ssid
+                    .as_deref()
+                    .is_some_and(|s| s.to_lowercase() == wanted)
         })
-        .with_context(|| format!("no adapter named '{name}' (list them with the 'adapters' command)"))
+        .with_context(|| {
+            format!("no adapter named '{name}' (list them with the 'adapters' command)")
+        })
 }
 
 /// Is the file a valid x64 PE (DLL/EXE)? Catches half-finished copies.
 fn is_x64_dll(path: &std::path::Path) -> bool {
     const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
-    let Ok(bytes) = std::fs::read(path) else { return false };
-    let u32_at = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let u16_at = |i: usize| bytes.get(i..i + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
-    let Some(pe) = u32_at(0x3c).map(|v| v as usize) else { return false };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let u32_at = |i: usize| {
+        bytes
+            .get(i..i + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let u16_at = |i: usize| {
+        bytes
+            .get(i..i + 2)
+            .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+    };
+    let Some(pe) = u32_at(0x3c).map(|v| v as usize) else {
+        return false;
+    };
     bytes.starts_with(b"MZ")
         && bytes.get(pe..pe + 4) == Some(b"PE\0\0")
         && u16_at(pe + 4) == Some(IMAGE_FILE_MACHINE_AMD64)

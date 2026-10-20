@@ -48,7 +48,11 @@ impl RulePolicy {
 
     /// Interfaces that can carry traffic right now.
     pub fn usable_interfaces(&self, adapters: &[AdapterInfo]) -> BTreeSet<u32> {
-        adapters.iter().filter(|a| self.usable(a)).map(|a| a.if_index).collect()
+        adapters
+            .iter()
+            .filter(|a| self.usable(a))
+            .map(|a| a.if_index)
+            .collect()
     }
 
     fn adapters(&self) -> Arc<Vec<AdapterInfo>> {

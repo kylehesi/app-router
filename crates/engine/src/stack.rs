@@ -17,7 +17,9 @@ use tracing::{debug, info, warn};
 use crate::bind;
 use crate::flows::FlowTable;
 use crate::nat::{NatEntry, TcpNat};
-use crate::packet::{self, IPV4_HEADER_LEN, PROTO_TCP, PROTO_UDP, TCP_ACK, TCP_SYN, UDP_HEADER_LEN};
+use crate::packet::{
+    self, IPV4_HEADER_LEN, PROTO_TCP, PROTO_UDP, TCP_ACK, TCP_SYN, UDP_HEADER_LEN,
+};
 use crate::policy::{Flow, Policy, Proto, Route};
 use crate::tun::Tun;
 
@@ -106,18 +108,28 @@ impl Engine {
             flows: flows.clone(),
         });
 
-        let reader = std::thread::Builder::new().name("tun-reader".into()).spawn({
-            let shared = shared.clone();
-            move || shared.reader_loop()
-        })?;
+        let reader = std::thread::Builder::new()
+            .name("tun-reader".into())
+            .spawn({
+                let shared = shared.clone();
+                move || shared.reader_loop()
+            })?;
         let tasks = vec![
             tokio::spawn(tcp_accept_loop(shared.clone(), policy.clone(), listener)),
             tokio::spawn(udp_dispatch(shared.clone(), policy, udp_rx)),
             tokio::spawn(nat_sweeper(shared)),
         ];
 
-        let mut engine = Self { routes: None, tasks, reader: Some(reader), tun, if_index, flows };
-        engine.routes = Some(netcfg::add_routes(if_index, &config.routes).context("failed to add routes")?);
+        let mut engine = Self {
+            routes: None,
+            tasks,
+            reader: Some(reader),
+            tun,
+            if_index,
+            flows,
+        };
+        engine.routes =
+            Some(netcfg::add_routes(if_index, &config.routes).context("failed to add routes")?);
         info!(if_index, %TUN_IP, listener_port, routes = ?config.routes, "engine started");
         Ok(engine)
     }
@@ -198,9 +210,15 @@ impl Shared {
             if data.len() < IPV4_HEADER_LEN || data[0] >> 4 != 4 || packet::is_v4_fragment(data) {
                 continue;
             }
-            let Some(info) = packet::parse(data) else { continue };
-            let (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) = (info.src, info.dst) else { continue };
-            let (Some(src_port), Some(dst_port)) = (info.src_port, info.dst_port) else { continue };
+            let Some(info) = packet::parse(data) else {
+                continue;
+            };
+            let (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) = (info.src, info.dst) else {
+                continue;
+            };
+            let (Some(src_port), Some(dst_port)) = (info.src_port, info.dst_port) else {
+                continue;
+            };
             let src = SocketAddrV4::new(src_ip, src_port);
             let dst = SocketAddrV4::new(dst_ip, dst_port);
             match info.protocol {
@@ -215,22 +233,27 @@ impl Shared {
         if data.len() < ihl + 20 {
             return;
         }
-        let (new_src, new_dst) = if *src.ip() == TUN_IP
-            && src.port() == self.listener_port
-            && *dst.ip() == PEER_IP
-        {
-            // Listener to app: make it look like it came from the remote server.
-            let Some(entry) = self.nat.inbound(dst.port()) else { return };
-            (entry.dst, SocketAddrV4::new(TUN_IP, entry.app_port))
-        } else if *src.ip() == TUN_IP && !in_tun_net(dst.ip()) {
-            // App to outside: redirect to the local listener.
-            let flags = data[ihl + 13];
-            let syn = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
-            let Some(nat_port) = self.nat.outbound(src.port(), dst, syn) else { return };
-            (SocketAddrV4::new(PEER_IP, nat_port), SocketAddrV4::new(TUN_IP, self.listener_port))
-        } else {
-            return;
-        };
+        let (new_src, new_dst) =
+            if *src.ip() == TUN_IP && src.port() == self.listener_port && *dst.ip() == PEER_IP {
+                // Listener to app: make it look like it came from the remote server.
+                let Some(entry) = self.nat.inbound(dst.port()) else {
+                    return;
+                };
+                (entry.dst, SocketAddrV4::new(TUN_IP, entry.app_port))
+            } else if *src.ip() == TUN_IP && !in_tun_net(dst.ip()) {
+                // App to outside: redirect to the local listener.
+                let flags = data[ihl + 13];
+                let syn = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
+                let Some(nat_port) = self.nat.outbound(src.port(), dst, syn) else {
+                    return;
+                };
+                (
+                    SocketAddrV4::new(PEER_IP, nat_port),
+                    SocketAddrV4::new(TUN_IP, self.listener_port),
+                )
+            } else {
+                return;
+            };
         self.inject(data.len(), |out| {
             out.copy_from_slice(data);
             packet::rewrite_v4_tcp(out, ihl, new_src, new_dst);
@@ -305,7 +328,9 @@ async fn tcp_accept_loop(shared: Arc<Shared>, policy: Arc<dyn Policy>, listener:
         if *peer.ip() != PEER_IP {
             continue; // connection that did not come through the NAT
         }
-        let Some(entry) = shared.nat.activate(peer.port()) else { continue };
+        let Some(entry) = shared.nat.activate(peer.port()) else {
+            continue;
+        };
         let (shared, policy) = (shared.clone(), policy.clone());
         tokio::spawn(async move {
             relay_tcp(&policy, &shared.flows, stream, entry).await;
@@ -333,7 +358,10 @@ async fn relay_tcp(
     // Registered before connecting, so a dead adapter can't leave us waiting for the timeout.
     let (_flow, mut kill) = flows.register(if_index, Proto::Tcp);
 
-    let connect = tokio::time::timeout(CONNECT_TIMEOUT, bind::connect_tcp(entry.dst.into(), if_index));
+    let connect = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        bind::connect_tcp(entry.dst.into(), if_index),
+    );
     let connected = tokio::select! {
         result = connect => match result {
             Ok(Ok(s)) => Some(s),
@@ -375,7 +403,11 @@ async fn relay_tcp(
 }
 
 /// Dispatches UDP packets to sessions by app port.
-async fn udp_dispatch(shared: Arc<Shared>, policy: Arc<dyn Policy>, mut rx: mpsc::Receiver<UdpDatagram>) {
+async fn udp_dispatch(
+    shared: Arc<Shared>,
+    policy: Arc<dyn Policy>,
+    mut rx: mpsc::Receiver<UdpDatagram>,
+) {
     let mut sessions: HashMap<u16, mpsc::Sender<UdpDatagram>> = HashMap::new();
     while let Some(datagram) = rx.recv().await {
         let port = datagram.app_port;
@@ -392,7 +424,12 @@ async fn udp_dispatch(shared: Arc<Shared>, policy: Arc<dyn Policy>, mut rx: mpsc
             sessions.retain(|_, tx| !tx.is_closed());
         }
         sessions.insert(port, tx);
-        tokio::spawn(udp_session(shared.clone(), policy.clone(), port, session_rx));
+        tokio::spawn(udp_session(
+            shared.clone(),
+            policy.clone(),
+            port,
+            session_rx,
+        ));
     }
 }
 
@@ -406,7 +443,11 @@ async fn udp_session(
     mut rx: mpsc::Receiver<UdpDatagram>,
 ) {
     let Some(first) = rx.recv().await else { return };
-    let idle = if first.dst.port() == 53 { DNS_IDLE } else { UDP_IDLE };
+    let idle = if first.dst.port() == 53 {
+        DNS_IDLE
+    } else {
+        UDP_IDLE
+    };
     let flow = Flow {
         proto: Proto::Udp,
         app: SocketAddrV4::new(TUN_IP, app_port),
@@ -471,7 +512,11 @@ async fn nat_sweeper(shared: Arc<Shared>) {
         tick.tick().await;
         let removed = shared.nat.expire(NAT_PENDING_TTL);
         if removed > 0 {
-            debug!(removed, active = shared.nat.len(), "removed unanswered NAT entries");
+            debug!(
+                removed,
+                active = shared.nat.len(),
+                "removed unanswered NAT entries"
+            );
         }
     }
 }

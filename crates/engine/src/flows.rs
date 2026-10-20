@@ -38,11 +38,28 @@ impl Drop for FlowGuard {
 impl FlowTable {
     /// Registers a flow leaving through `if_index`. The receiver fires when the
     /// flow must be torn down; keep the guard alive for as long as the relay runs.
-    pub fn register(self: &Arc<Self>, if_index: u32, proto: Proto) -> (FlowGuard, oneshot::Receiver<()>) {
+    pub fn register(
+        self: &Arc<Self>,
+        if_index: u32,
+        proto: Proto,
+    ) -> (FlowGuard, oneshot::Receiver<()>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (kill, rx) = oneshot::channel();
-        self.entries.lock().unwrap().insert(id, Entry { if_index, proto, kill });
-        (FlowGuard { table: self.clone(), id }, rx)
+        self.entries.lock().unwrap().insert(
+            id,
+            Entry {
+                if_index,
+                proto,
+                kill,
+            },
+        );
+        (
+            FlowGuard {
+                table: self.clone(),
+                id,
+            },
+            rx,
+        )
     }
 
     /// Tears down every flow on `if_index`; returns how many were signalled.
@@ -63,7 +80,12 @@ impl FlowTable {
 
     /// `(if_index, proto)` of every active flow.
     pub fn active(&self) -> Vec<(u32, Proto)> {
-        self.entries.lock().unwrap().values().map(|e| (e.if_index, e.proto)).collect()
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|e| (e.if_index, e.proto))
+            .collect()
     }
 }
 
@@ -81,7 +103,10 @@ mod tests {
         assert_eq!(table.reset_interface(7), 2);
         assert!(kill_a.try_recv().is_ok());
         assert!(kill_b.try_recv().is_ok());
-        assert!(kill_c.try_recv().is_err(), "flow on another interface must survive");
+        assert!(
+            kill_c.try_recv().is_err(),
+            "flow on another interface must survive"
+        );
         assert_eq!(table.active(), vec![(9, Proto::Tcp)]);
         assert_eq!(table.reset_interface(7), 0, "already reset");
     }

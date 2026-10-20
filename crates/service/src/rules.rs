@@ -28,7 +28,10 @@ impl RuleStore {
             Err(e) => return Err(e).with_context(|| format!("failed to open {}", path.display())),
         };
         let rules = rules.into_iter().map(|r| (r.exe.clone(), r)).collect();
-        Ok(Self { path, rules: RwLock::new(rules) })
+        Ok(Self {
+            path,
+            rules: RwLock::new(rules),
+        })
     }
 
     pub fn list(&self) -> Vec<Rule> {
@@ -49,8 +52,17 @@ impl RuleStore {
         let mut rules = self.rules.write().unwrap();
         match adapter_guid {
             Some(guid) => {
-                let on_unavailable = rules.get(&exe).map_or(Fallback::default(), |r| r.on_unavailable);
-                rules.insert(exe.clone(), Rule { exe, adapter_guid: guid, on_unavailable });
+                let on_unavailable = rules
+                    .get(&exe)
+                    .map_or(Fallback::default(), |r| r.on_unavailable);
+                rules.insert(
+                    exe.clone(),
+                    Rule {
+                        exe,
+                        adapter_guid: guid,
+                        on_unavailable,
+                    },
+                );
             }
             None => {
                 rules.remove(&exe);

@@ -51,8 +51,16 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (assign_guids, weak) = (guids.clone(), ui.as_weak());
     ui.on_assign(move |exe, index| {
-        let guid = assign_guids.lock().unwrap().get(index as usize).cloned().flatten();
-        let req = Request::SetRule { exe: exe.to_string(), adapter_guid: guid };
+        let guid = assign_guids
+            .lock()
+            .unwrap()
+            .get(index as usize)
+            .cloned()
+            .flatten();
+        let req = Request::SetRule {
+            exe: exe.to_string(),
+            adapter_guid: guid,
+        };
         let (tx, weak) = (refresh_tx.clone(), weak.clone());
         std::thread::spawn(move || {
             if let Err(e) = client::request(&req) {
@@ -95,7 +103,11 @@ fn fetch() -> io::Result<Snapshot> {
     let Response::Rules(rules) = client::request(&Request::GetRules)? else {
         return Err(unexpected());
     };
-    Ok(Snapshot { adapters, apps, rules })
+    Ok(Snapshot {
+        adapters,
+        apps,
+        rules,
+    })
 }
 
 fn build_view(s: &Snapshot) -> View {
@@ -118,7 +130,10 @@ fn build_view(s: &Snapshot) -> View {
     }
     // Keep the selection if a rule points at an adapter that is not plugged in right now.
     for rule in &s.rules {
-        if !choice_guids.iter().any(|g| g.as_deref() == Some(rule.adapter_guid.as_str())) {
+        if !choice_guids
+            .iter()
+            .any(|g| g.as_deref() == Some(rule.adapter_guid.as_str()))
+        {
             choices.push("Adapter not plugged in".into());
             choice_guids.push(Some(rule.adapter_guid.clone()));
         }
@@ -164,7 +179,10 @@ fn build_view(s: &Snapshot) -> View {
         });
     }
 
-    let online = usable.iter().filter(|a| a.connected && a.has_internet_route()).count();
+    let online = usable
+        .iter()
+        .filter(|a| a.connected && a.has_internet_route())
+        .count();
     View {
         status: format!(
             "Service running · {online} internet connection{}",

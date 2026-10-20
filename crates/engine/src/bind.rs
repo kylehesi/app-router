@@ -12,8 +12,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use windows_sys::Win32::Networking::WinSock::{
-    setsockopt, WSAGetLastError, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, IP_UNICAST_IF,
-    SOCKET, SOCKET_ERROR,
+    setsockopt, WSAGetLastError, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, IP_UNICAST_IF, SOCKET,
+    SOCKET_ERROR,
 };
 
 /// Forces the socket's traffic out through the interface with index `if_index`.
@@ -41,7 +41,11 @@ pub fn set_unicast_interface(sock: RawSocket, ipv6: bool, if_index: u32) -> io::
 
 /// Opens a TCP connection to `dst` through the `if_index` adapter only.
 pub async fn connect_tcp(dst: SocketAddr, if_index: u32) -> io::Result<TcpStream> {
-    let sock = if dst.is_ipv4() { TcpSocket::new_v4()? } else { TcpSocket::new_v6()? };
+    let sock = if dst.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
     set_unicast_interface(sock.as_raw_socket(), dst.is_ipv6(), if_index)?;
     let stream = sock.connect(dst).await?;
     stream.set_nodelay(true)?;
@@ -66,8 +70,10 @@ pub async fn public_ipv4_via(if_index: u32) -> io::Result<String> {
             .find(SocketAddr::is_ipv4)
             .ok_or_else(|| io::Error::other("no IPv4 address found for api.ipify.org"))?;
         let mut s = connect_tcp(dst, if_index).await?;
-        s.write_all(format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes())
-            .await?;
+        s.write_all(
+            format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await?;
         let mut resp = Vec::new();
         s.read_to_end(&mut resp).await?;
         let resp = String::from_utf8_lossy(&resp);

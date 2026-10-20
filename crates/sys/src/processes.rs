@@ -16,12 +16,10 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::util::{from_wide_buf, win32_err};
@@ -82,7 +80,8 @@ pub fn process_path(pid: u32) -> Option<String> {
     }
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
-    let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
     unsafe { CloseHandle(h) };
     (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
@@ -201,7 +200,9 @@ pub fn network_apps() -> io::Result<Vec<AppInfo>> {
         if s.pid == PID_IDLE || s.pid == PID_SYSTEM {
             continue;
         }
-        let Some(exe) = names.get(&s.pid) else { continue };
+        let Some(exe) = names.get(&s.pid) else {
+            continue;
+        };
         let app = apps.entry(exe.clone()).or_insert_with(|| AppInfo {
             exe: exe.clone(),
             path: None,
@@ -240,7 +241,9 @@ fn fetch_table(f: impl Fn(*mut c_void, *mut u32) -> u32) -> io::Result<Vec<u64>>
             e => return Err(win32_err(e)),
         }
     }
-    Err(io::Error::other("failed to get socket table (size kept changing)"))
+    Err(io::Error::other(
+        "failed to get socket table (size kept changing)",
+    ))
 }
 
 /// All MIB_*TABLE structs have the shape `{ dwNumEntries: u32, table: [ROW; 1] }`.
@@ -260,7 +263,10 @@ fn port(raw: u32) -> u16 {
 }
 
 fn v4(addr: u32, raw_port: u32) -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())), port(raw_port))
+    SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())),
+        port(raw_port),
+    )
 }
 
 fn v6(addr: [u8; 16], raw_port: u32) -> SocketAddr {
