@@ -7,7 +7,7 @@ Effort: **S** about a day, **M** a few days, **L** a week or more.
 ## Round 1 (priority order)
 
 1. A2 — Instant failover when an adapter drops *(implemented; real unplug test pending)*
-2. E4 — GitHub Actions CI
+2. E4 — GitHub Actions CI *(in progress)*
 3. A4 — Fast, exact socket -> process lookup
 4. A3 — "Connected but no internet" detection
 5. A1 — Ping/tracert support

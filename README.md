@@ -1,5 +1,7 @@
 # Router: per-app internet selector for Windows
 
+[![CI](https://github.com/kylehesi/app-router/actions/workflows/ci.yml/badge.svg)](https://github.com/kylehesi/app-router/actions/workflows/ci.yml)
+
 Router keeps several internet connections up at the same time (built-in Wi-Fi, a USB Wi-Fi
 dongle, USB tethering from a phone, Ethernet...) and lets you choose which one each
 application uses.
@@ -56,6 +58,18 @@ application uses.
 - **No driver signing needed:** Wintun is signed by WireGuard and shipped next to the exe.
 - **Rust:** C/C++ speed without garbage collector pauses, plus memory safety.
 - **Statically linked CRT** (`crt-static`): no VC++ Redistributable to install.
+
+## Download
+
+Tagged versions are built by CI and published on the
+[Releases](https://github.com/kylehesi/app-router/releases) page as
+`router-windows-x64.zip` (`router-service.exe`, `router-ui.exe`, `wintun.dll`, `Router.bat`).
+Extract it anywhere and double-click `Router.bat`.
+
+## Continuous integration
+
+Every push and pull request runs `cargo fmt --check`, `cargo clippy -D warnings`, the tests
+and a release build on Windows. Pushing a tag such as `v0.2.0` also publishes a release.
 
 ## Requirements
 

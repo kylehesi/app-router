@@ -10,7 +10,9 @@ if errorlevel 1 (
 )
 
 cd /d "%~dp0"
+rem Release ZIP: the exes sit next to this file. Source checkout: target\release.
 set "BIN=%~dp0target\release"
+if exist "%~dp0router-service.exe" set "BIN=%~dp0."
 if not exist "%BIN%\router-service.exe" (
     echo [ERROR] %BIN%\router-service.exe not found.
     echo         Build it first:  cargo build --release
